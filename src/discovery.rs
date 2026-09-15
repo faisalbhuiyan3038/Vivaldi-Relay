@@ -43,9 +43,10 @@ pub fn resolve_vivaldi(override_hint: Option<&Path>) -> Result<VivaldiTarget, St
         find_vivaldi_exe()?
     };
 
-    let canonical_exe = exe_path
+    let raw_canonical = exe_path
         .canonicalize()
         .map_err(|e| format!("Failed to canonicalize Vivaldi exe path {}: {}", exe_path.display(), e))?;
+    let canonical_exe = strip_unc_prefix(&raw_canonical);
 
     let app_dir = canonical_exe
         .parent()
@@ -180,4 +181,13 @@ pub fn find_active_version_dir(app_dir: &Path) -> Result<(String, PathBuf, PathB
 
 pub fn encode_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+pub fn strip_unc_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    }
 }
