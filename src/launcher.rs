@@ -61,7 +61,7 @@ pub fn launch_vivaldi(exe_path: &Path, args: &[String]) -> Result<(), String> {
     }
 }
 
-fn ensure_real_executable(target_exe: &Path) -> Result<PathBuf, String> {
+pub fn get_real_executable_path(target_exe: &Path) -> PathBuf {
     let file_name = target_exe
         .file_name()
         .and_then(|n| n.to_str())
@@ -74,7 +74,27 @@ fn ensure_real_executable(target_exe: &Path) -> Result<PathBuf, String> {
         "vivaldi_app_real.exe"
     };
 
-    let real_exe = target_exe.with_file_name(real_name);
+    target_exe.with_file_name(real_name)
+}
+
+pub fn remove_real_executable(target_exe: &Path) -> Result<bool, String> {
+    let real_exe = get_real_executable_path(target_exe);
+    if real_exe.exists() {
+        fs::remove_file(&real_exe).map_err(|e| {
+            format!(
+                "Failed to remove {}. If Vivaldi is running, please close it first: {}",
+                real_exe.display(),
+                e
+            )
+        })?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn ensure_real_executable(target_exe: &Path) -> Result<PathBuf, String> {
+    let real_exe = get_real_executable_path(target_exe);
 
     let needs_update = match (target_exe.metadata(), real_exe.metadata()) {
         (Ok(target_meta), Ok(real_meta)) => {

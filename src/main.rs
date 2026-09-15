@@ -39,8 +39,7 @@ fn main() {
         "setup" => {
             let portable = args.iter().any(|a| a == "--portable");
             let path_arg = get_flag_value(&args, "--path").or_else(|| get_flag_value(&args, "-p"));
-            let select = args.iter().any(|a| a == "--select-path");
-            run_setup(portable, path_arg.as_deref(), select);
+            run_setup(portable, path_arg.as_deref());
         }
         "status" => {
             let as_json = args.iter().any(|a| a == "--json");
@@ -73,7 +72,8 @@ fn main() {
         "install-hook" => {
             let path_arg = get_flag_value(&args, "--path").or_else(|| get_flag_value(&args, "-p"));
             let target_arg = get_flag_value(&args, "--target");
-            run_install_hook(path_arg.as_deref(), target_arg.as_deref());
+            let non_interactive = args.iter().any(|a| a == "--non-interactive");
+            run_install_hook(path_arg.as_deref(), target_arg.as_deref(), non_interactive);
         }
         "uninstall-hook" => {
             let target_arg = get_flag_value(&args, "--target");
@@ -164,7 +164,6 @@ fn ensure_patched_and_bundled(config: &mut ModConfig, target: &VivaldiTarget) ->
 
 fn select_or_confirm_vivaldi_path(
     explicit_arg: Option<&str>,
-    force_interactive: bool,
     config: &mut ModConfig,
 ) -> Result<PathBuf, String> {
     // 1. Explicit CLI argument given
@@ -195,28 +194,22 @@ fn select_or_confirm_vivaldi_path(
 
     let discovered = discovery::discover_all_installations();
 
-    // If not forced interactive and already configured with a valid path
-    if !force_interactive {
-        if let Some(existing) = &config.vivaldi_path {
-            let p = PathBuf::from(existing);
-            if p.is_file() {
-                return Ok(p);
-            }
-        }
-    }
+    // If explicit arg was not given, always prompt interactively
+    let current_configured = config.vivaldi_path.as_deref();
 
-    // Interactive prompt
     println!("\n=== Vivaldi Installation Selection ===");
-    println!("Specify where Vivaldi is installed on this machine.");
-    println!("Note: You can specify either the full path to 'vivaldi.exe'");
+    println!("The interceptor needs to know where Vivaldi is installed on this machine.");
+    println!("Path guideline: You can specify either the full path to 'vivaldi.exe'");
     println!("(e.g., M:\\Vivaldi\\Application\\vivaldi.exe)");
     println!("or the folder where 'vivaldi.exe' lives (e.g., M:\\Vivaldi\\Application).\n");
 
     if !discovered.is_empty() {
-        println!("Discovered installation(s):");
+        println!("Discovered installation(s) on this system:");
         for (i, inst) in discovered.iter().enumerate() {
+            let is_cur = current_configured.map(|c| c.eq_ignore_ascii_case(&inst.exe_path.to_string_lossy())).unwrap_or(false);
+            let cur_marker = if is_cur { " [Current]" } else { "" };
             let kind = if inst.is_snapshot { " [Snapshot]" } else { "" };
-            println!("  [{}] {}{} (version {})", i + 1, inst.exe_path.display(), kind, inst.version);
+            println!("  [{}] {}{}{} (version {})", i + 1, inst.exe_path.display(), kind, cur_marker, inst.version);
         }
         println!("  [C] Specify custom path manually");
     } else {
@@ -224,9 +217,9 @@ fn select_or_confirm_vivaldi_path(
         println!("  [C] Specify custom path manually");
     }
 
-    let default_choice = if let Some(existing) = &config.vivaldi_path {
+    let default_choice = if let Some(existing) = current_configured {
         println!("\nPress Enter to keep current path: [{}]", existing);
-        Some(existing.clone())
+        Some(existing.to_string())
     } else if let Some(first) = discovered.first() {
         println!("\nPress Enter to use default: [{}]", first.exe_path.display());
         Some(first.exe_path.to_string_lossy().to_string())
@@ -303,7 +296,7 @@ fn select_or_confirm_vivaldi_path(
     Ok(clean)
 }
 
-fn run_setup(portable: bool, path_arg: Option<&str>, select: bool) {
+fn run_setup(portable: bool, path_arg: Option<&str>) {
     println!("=== Vivaldi JIT Mod Interceptor: Setup ===");
 
     if portable {
@@ -327,8 +320,8 @@ fn run_setup(portable: bool, path_arg: Option<&str>, select: bool) {
 
     let mut config = ModConfig::load().unwrap_or_default();
 
-    // Select or confirm Vivaldi path
-    let target_exe = match select_or_confirm_vivaldi_path(path_arg, select || config.vivaldi_path.is_none(), &mut config) {
+    // Select or confirm Vivaldi path interactively
+    let target_exe = match select_or_confirm_vivaldi_path(path_arg, &mut config) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Path selection failed: {}", e);
@@ -580,35 +573,82 @@ fn run_patch_command() {
 fn run_unpatch_command() {
     let config = ModConfig::load().unwrap_or_default();
     match discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new)) {
-        Ok(target) => match patcher::unpatch_window_html(&target.window_html) {
-            Ok(restored) => {
-                if restored {
-                    println!("✓ Restored original window.html at {}", target.window_html.display());
-                } else {
-                    println!("window.html was not patched.");
+        Ok(target) => {
+            // 1. Remove vivaldi_real.exe if present
+            match launcher::remove_real_executable(&target.exe_path) {
+                Ok(removed) => {
+                    if removed {
+                        println!("✓ Removed hardlink launcher: {}", launcher::get_real_executable_path(&target.exe_path).display());
+                    }
+                }
+                Err(e) => eprintln!("Notice: {}", e),
+            }
+
+            // 2. Remove compiled bundle files from resources/vivaldi
+            let bundle_css = target.resources_dir.join("inject_bundle.css");
+            if bundle_css.exists() {
+                match std::fs::remove_file(&bundle_css) {
+                    Ok(_) => println!("✓ Removed compiled stylesheet: {}", bundle_css.display()),
+                    Err(e) => eprintln!("Error removing stylesheet {}: {}", bundle_css.display(), e),
                 }
             }
-            Err(e) => eprintln!("Error restoring window.html: {}", e),
-        },
+            let bundle_js = target.resources_dir.join("inject_bundle.js");
+            if bundle_js.exists() {
+                match std::fs::remove_file(&bundle_js) {
+                    Ok(_) => println!("✓ Removed compiled script: {}", bundle_js.display()),
+                    Err(e) => eprintln!("Error removing script {}: {}", bundle_js.display(), e),
+                }
+            }
+
+            // 3. Restore pristine window.html
+            match patcher::unpatch_window_html(&target.window_html) {
+                Ok(restored) => {
+                    if restored {
+                        println!("✓ Restored original window.html at {}", target.window_html.display());
+                    } else {
+                        println!("window.html was not patched.");
+                    }
+                }
+                Err(e) => eprintln!("Error restoring window.html: {}", e),
+            }
+        }
         Err(e) => eprintln!("Error discovering Vivaldi: {}", e),
     }
 }
 
-fn run_install_hook(path_arg: Option<&str>, target_arg: Option<&str>) {
+fn run_install_hook(path_arg: Option<&str>, target_arg: Option<&str>, non_interactive: bool) {
     let mut config = ModConfig::load().unwrap_or_default();
 
-    // Select/confirm Vivaldi path first in current user console
-    if !os_hook::is_elevated() || path_arg.is_some() || config.vivaldi_path.is_none() {
-        if let Ok(chosen) = select_or_confirm_vivaldi_path(path_arg, false, &mut config) {
-            println!("Using Vivaldi path: {}", chosen.display());
+    // If not non-interactive, always ask or confirm path with user interactively
+    let target_path = if !non_interactive {
+        match select_or_confirm_vivaldi_path(path_arg, &mut config) {
+            Ok(p) => {
+                println!("Target Vivaldi path: {}", p.display());
+                Some(p)
+            }
+            Err(e) => {
+                eprintln!("Path selection failed: {}", e);
+                return;
+            }
         }
-    }
+    } else if let Some(arg) = path_arg {
+        match select_or_confirm_vivaldi_path(Some(arg), &mut config) {
+            Ok(p) => Some(p),
+            Err(_) => None,
+        }
+    } else {
+        config.vivaldi_path.as_ref().map(PathBuf::from)
+    };
 
     let exe_name = target_arg
         .map(|s| s.to_string())
         .unwrap_or_else(|| config.exe_name.clone());
 
-    match os_hook::install_hook(&exe_name) {
+    let extra_elevation_args = target_path
+        .as_ref()
+        .map(|p| format!(" --path \"{}\"", p.display()));
+
+    match os_hook::install_hook(&exe_name, extra_elevation_args.as_deref()) {
         Ok(exe) => {
             println!("✓ Successfully installed IFEO launch interceptor hook for '{}' in Windows Registry!", exe_name);
             println!("Debugger path: {}", exe.display());
@@ -623,6 +663,18 @@ fn run_uninstall_hook(target_arg: Option<&str>) {
     let exe_name = target_arg
         .map(|s| s.to_string())
         .unwrap_or_else(|| config.exe_name.clone());
+
+    // Clean up vivaldi_real.exe if present
+    if let Ok(target) = discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new)) {
+        match launcher::remove_real_executable(&target.exe_path) {
+            Ok(removed) => {
+                if removed {
+                    println!("✓ Removed hardlink launcher for: {}", target.exe_path.display());
+                }
+            }
+            Err(e) => eprintln!("Notice: {}", e),
+        }
+    }
 
     match os_hook::uninstall_hook(&exe_name) {
         Ok(_) => println!("✓ Successfully removed IFEO launch interceptor hook for '{}' from Windows Registry.", exe_name),

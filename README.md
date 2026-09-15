@@ -5,22 +5,25 @@ A blazingly fast Windows Just-In-Time (JIT) launch interceptor written in Rust t
 ## Key Features
 
 - **Instant JIT Patching (<5ms Overhead)**: Runs at execution time immediately before browser launch. Checks `window.html` and patches if missing.
-- **Windows IFEO Infinite-Loop Prevention**: Uses Win32 debugging APIs (`DEBUG_ONLY_THIS_PROCESS` + immediate detach) to allow `interceptor.exe` to spawn `vivaldi.exe` without triggering Windows Image File Execution Options recursively.
+- **Windows IFEO Infinite-Loop Prevention (Hardlink Bypass)**: Creates an instantaneous NTFS hardlink (`vivaldi_real.exe` -> `vivaldi.exe`) to bypass Windows Image File Execution Options without debugger overhead, process pausing, or recursion loops.
+- **Dynamic Drive & Path Discovery**: Scans all active logical drives (A–Z) and registry paths. Interactively prompts to confirm detected installations or enter a custom path.
 - **Chromium CSP-Compliant Bundling**: Concatenates enabled CSS and JS mods into `inject_bundle.css` and `inject_bundle.js` directly within Vivaldi's `resources\vivaldi\` package directory, avoiding Chromium extension Content Security Policy (CSP) errors.
 - **Mod Isolation & Error Trapping**: Each JavaScript mod is executed in an isolated IIFE with dedicated `try ... catch` blocks so a syntax error or exception in one mod cannot break other mods or the Vivaldi UI.
-- **UI Readiness Polling**: Automatically defers DOM-dependent scripts until Vivaldi's root `#browser` container is mounted.
+- **UI Readiness Polling**: Automatically defers DOM-dependent scripts until Vivaldi's root `#browser` container is mounted (configurable selector and delay).
+- **Pure Injection Policy**: Never touches or cleans up user-authored scripts or existing HTML tags. Only manages its own injection tag.
+- **Clean Unpatch & Teardown**: `interceptor unpatch` restores pristine `window.html` and deletes `vivaldi_real.exe` along with compiled bundles.
 - **Native Failsafe (Zero Lockout Risk)**: If patching ever fails (e.g. disk or permission error), displays a native Win32 `MessageBoxW` allowing you to launch Vivaldi without mods.
-- **Admin Elevation Built-in**: Seamlessly prompts Windows UAC when running `install-hook` or `uninstall-hook`.
+- **Admin Elevation Built-in**: Seamlessly prompts Windows UAC when running `install-hook` or `uninstall-hook`, forwarding parameters transparently.
 
 ---
 
 ## Directory Layout & Mod Storage
 
-Mods and configuration are permanently stored in your Windows AppData directory, keeping them completely safe from browser updates:
+Mods and configuration can be stored in standard Windows AppData or in portable mode:
 
 ```
-%APPDATA%\VivaldiModManager\
-├── mods_config.json          # Mod states and settings
+%APPDATA%\VivaldiModManager\ (or ./portable next to interceptor.exe)
+├── mods_config.json          # Mod states, execution order, and settings
 └── user_mods\
     ├── css\                  # Permanent CSS mods
     └── js\                   # Permanent JS mods
@@ -33,14 +36,17 @@ Mods and configuration are permanently stored in your Windows AppData directory,
 ### Basic Commands
 
 ```bash
-# Setup: Detects Vivaldi, creates directories, and auto-imports existing mods
+# Setup: Interactively confirms Vivaldi path, initializes storage, and imports mods
 interceptor setup
+
+# Setup in portable mode
+interceptor setup --portable
 
 # Check status (Vivaldi path, version, window.html patch state, IFEO hook state)
 interceptor status
 interceptor status --json
 
-# List all registered mods and their enabled/disabled states
+# List all registered mods, priority order, and their enabled/disabled states
 interceptor list-mods
 interceptor list-mods --json
 
@@ -53,7 +59,7 @@ interceptor import C:\path\to\my_mod.js
 # Manually trigger bundle recompilation and patching
 interceptor patch
 
-# Restore pristine original window.html
+# Restore pristine original window.html and remove hardlinks/bundles
 interceptor unpatch
 ```
 
@@ -61,10 +67,10 @@ interceptor unpatch
 
 ```bash
 # Register Image File Execution Options (IFEO) hook in Windows Registry
-# (Windows UAC prompt will appear automatically if not already elevated)
+# (Prompts for target confirmation, then elevates via UAC)
 interceptor install-hook
 
-# Remove IFEO hook from Windows Registry
+# Remove IFEO hook from Windows Registry and clean up hardlinks
 interceptor uninstall-hook
 ```
 
@@ -87,17 +93,18 @@ User Click / Link / Auto-Update
       ▼                                               ▼
 [window.html has hook?]                        [window.html clean]
       │                                               │
-      ├─ Yes ──► (Instant Pass-through)               ├─ No ──► Read %APPDATA% Mods
+      ├─ Yes ──► (Instant Pass-through)               ├─ No ──► Read Mods
       │                                               │         Compile inject_bundle.{css,js}
       │                                               │         Inject script tag before </body>
       │                                               │         Backup window.html.orig
       ▼                                               ▼
-[Win32 CreateProcess (DEBUG_ONLY_THIS_PROCESS)] ◄─────┘
+[Ensure NTFS Hardlink: vivaldi_real.exe] ◄────────────┘
       │
-      ├─ DebugSetProcessKillOnExit(FALSE)
-      ├─ DebugActiveProcessStop(processId)
       ▼
-[vivaldi.exe runs completely detached]
+[Win32 CreateProcessW("vivaldi_real.exe", <args>)]
+      │ (Bypasses IFEO without recursion or debugging flags)
+      ▼
+[Vivaldi Browser Runs at Native Speed]
 [interceptor.exe exits immediately (~2-5ms total)]
 ```
 

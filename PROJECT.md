@@ -207,18 +207,17 @@ SUBCOMMANDS:
                           Options:
                             --portable           Enable portable mode in executable directory
                             --path <PATH>        Specify vivaldi.exe or parent directory directly
-                            --select-path        Force interactive selection menu
     status [--json]       Display hook status, storage mode, Vivaldi installation info, and mod stats
     list-mods [--json]    List all registered mods, load order, and their enabled/disabled states
     toggle <MOD_NAME>     Toggle a mod between enabled and disabled
     import <FILE_PATH>    Import a new .css or .js mod file into the manager
     patch                 Manually compile bundles and patch window.html
-    unpatch               Restore pristine window.html without mod hooks
+    unpatch               Restore pristine window.html and clean up temporary hardlinks/bundles
     install-hook [OPTS]   Register IFEO debugger hook (elevates via UAC if needed)
                           Options:
                             --path <PATH>        Specify target vivaldi.exe or directory
                             --target <EXE_NAME>  Specify target exe name (default: vivaldi.exe)
-    uninstall-hook [OPTS] Remove IFEO debugger hook (elevates via UAC if needed)
+    uninstall-hook [OPTS] Remove IFEO debugger hook and clean up hardlinks (elevates via UAC if needed)
                           Options:
                             --target <EXE_NAME>  Specify target exe name (default: vivaldi.exe)
     help                  Print this help message
@@ -240,6 +239,13 @@ Whenever modifications are made to this codebase, developers/agents must adhere 
 ---
 
 ## 8. Change Log
+
+### [v0.1.3] - 2026-09-15
+- **Fix**: Interactive path selection menu now prompts consistently during both `interceptor setup` and `interceptor install-hook`, even when running within an already-elevated Administrator console or when `mods_config.json` already has a configured path.
+- **Fix**: Seamless elevation forwarding during `install-hook`—the chosen target path is automatically passed as an argument (`--non-interactive --path "<path>"`), preventing duplicate prompts or profile mismatches across elevation boundaries.
+- **Fix**: Enhanced `interceptor unpatch` and `interceptor uninstall-hook` to cleanly remove the `vivaldi_real.exe` NTFS hardlink and all compiled bundle artifacts (`inject_bundle.css`, `inject_bundle.js`), completely cleaning the Vivaldi application directory and restoring pristine `window.html`.
+- **Refactor**: Centralized `get_real_executable_path` and `remove_real_executable` into `src/launcher.rs` with graceful error messages if Vivaldi is currently open during unpatching.
+- **Binary**: Updated standalone release binary in `releases/interceptor.exe`.
 
 ### [v0.1.2] - 2026-09-15
 - **Feature**: Replaced hardcoded drive letters (`[M, D, E, C]`) with dynamic logical drive scanning via `GetLogicalDrives()`, detecting all active drives (A–Z) across the system.

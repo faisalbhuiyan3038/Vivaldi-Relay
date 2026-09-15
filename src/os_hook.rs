@@ -143,13 +143,7 @@ pub fn get_hook_status(exe_name: &str) -> HookStatus {
     }
 }
 
-pub fn install_hook(exe_name: &str) -> Result<PathBuf, String> {
-    if !is_elevated() {
-        println!("Requesting Administrator elevation for IFEO registry setup...");
-        relaunch_as_admin(&format!("install-hook --target \"{}\"", exe_name))?;
-        return Ok(std::env::current_exe().unwrap_or_default());
-    }
-
+pub fn install_hook_registry(exe_name: &str) -> Result<PathBuf, String> {
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Failed to get current executable path: {}", e))?;
 
@@ -200,13 +194,19 @@ pub fn install_hook(exe_name: &str) -> Result<PathBuf, String> {
     }
 }
 
-pub fn uninstall_hook(exe_name: &str) -> Result<(), String> {
+pub fn install_hook(exe_name: &str, extra_elevation_args: Option<&str>) -> Result<PathBuf, String> {
     if !is_elevated() {
-        println!("Requesting Administrator elevation to remove IFEO registry hook...");
-        relaunch_as_admin(&format!("uninstall-hook --target \"{}\"", exe_name))?;
-        return Ok(());
+        println!("Requesting Administrator elevation for IFEO registry setup...");
+        let extra = extra_elevation_args.unwrap_or("");
+        let cmd = format!("install-hook --non-interactive --target \"{}\"{}", exe_name, extra);
+        relaunch_as_admin(&cmd)?;
+        return Ok(std::env::current_exe().unwrap_or_default());
     }
 
+    install_hook_registry(exe_name)
+}
+
+pub fn uninstall_hook_registry(exe_name: &str) -> Result<(), String> {
     unsafe {
         let key_str = get_ifeo_key_path(exe_name);
         let key_wide = encode_wide(&key_str);
@@ -230,4 +230,14 @@ pub fn uninstall_hook(exe_name: &str) -> Result<(), String> {
 
         Ok(())
     }
+}
+
+pub fn uninstall_hook(exe_name: &str) -> Result<(), String> {
+    if !is_elevated() {
+        println!("Requesting Administrator elevation to remove IFEO registry hook...");
+        relaunch_as_admin(&format!("uninstall-hook --target \"{}\"", exe_name))?;
+        return Ok(());
+    }
+
+    uninstall_hook_registry(exe_name)
 }
