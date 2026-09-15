@@ -174,6 +174,30 @@ impl ModConfig {
         Ok(())
     }
 
+    /// Returns true only when mods_config.json actually exists on disk.
+    /// Use this to distinguish "never ran setup" from "config loaded fine".
+    pub fn is_configured() -> bool {
+        Self::get_config_path().exists()
+    }
+
+    /// Load config for CLI management commands.
+    /// Unlike `load()`, this returns a guided error message instead of silently
+    /// defaulting when mods_config.json does not exist (i.e. setup was never run).
+    pub fn load_or_require_setup() -> Result<Self, String> {
+        let path = Self::get_config_path();
+        if !path.exists() {
+            return Err(format!(
+                "Setup has not been run yet.\n\
+                 Run 'interceptor setup' first to configure your Vivaldi path and mod directories.\n\
+                 Tip: run 'interceptor help' to see all available commands."
+            ));
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read config from {}: {}", path.display(), e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse config JSON: {}", e))
+    }
+
     pub fn load() -> Result<Self, String> {
         let path = Self::get_config_path();
         if !path.exists() {
@@ -359,7 +383,9 @@ impl ModConfig {
             self.mods.sort_by(|a, b| {
                 a.order.cmp(&b.order).then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
             });
-            self.save()?;
+            // NOTE: Save is intentionally NOT called here. Saving is the caller's
+            // responsibility, so read-only callers (e.g. list-mods) don't silently
+            // mutate mods_config.json.
         }
 
         Ok(newly_found)

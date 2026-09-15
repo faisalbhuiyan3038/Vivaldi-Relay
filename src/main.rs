@@ -15,7 +15,18 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() <= 1 {
-        // No arguments: default to JIT launch
+        // No arguments: JIT launch for IFEO — but show onboarding if never configured
+        if !ModConfig::is_configured() {
+            println!("Vivaldi JIT Mod Interceptor v{}", env!("CARGO_PKG_VERSION"));
+            println!();
+            println!("First-time setup required. No configuration found at:");
+            println!("  {}", ModConfig::get_config_path().display());
+            println!();
+            println!("Get started:");
+            println!("  interceptor setup     — configure your Vivaldi path and import mods");
+            println!("  interceptor help      — see all available commands");
+            std::process::exit(0);
+        }
         run_jit_launch(None, &[]);
         return;
     }
@@ -47,7 +58,8 @@ fn main() {
         }
         "list-mods" | "list" => {
             let as_json = args.iter().any(|a| a == "--json");
-            run_list_mods(as_json);
+            let rescan = args.iter().any(|a| a == "--rescan");
+            run_list_mods(as_json, rescan);
         }
         "toggle" => {
             if args.len() < 3 {
@@ -67,7 +79,8 @@ fn main() {
             run_patch_command();
         }
         "unpatch" => {
-            run_unpatch_command();
+            let clean = args.iter().any(|a| a == "--clean");
+            run_unpatch_command(clean);
         }
         "install-hook" => {
             let path_arg = get_flag_value(&args, "--path").or_else(|| get_flag_value(&args, "-p"));
@@ -83,7 +96,7 @@ fn main() {
             print_help();
         }
         "version" | "--version" | "-v" => {
-            println!("Vivaldi JIT Mod Interceptor v0.1.2");
+            println!("Vivaldi JIT Mod Interceptor v{}", env!("CARGO_PKG_VERSION"));
         }
         _ => {
             // Forward any unrecognized first argument directly as browser argument (e.g. URL)
@@ -103,6 +116,33 @@ fn get_flag_value(args: &[String], flag: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Resolve Vivaldi with an explicit user-visible notice when the path wasn't
+/// configured and auto-discovery was used instead. `for_write` = true means
+/// the caller intends to modify files — in that case we hard-error rather
+/// than silently discover.
+#[allow(dead_code)]
+fn resolve_vivaldi_with_notice(
+    vivaldi_path: Option<&str>,
+    for_write: bool,
+) -> Result<VivaldiTarget, String> {
+    if vivaldi_path.is_none() {
+        if for_write {
+            return Err(
+                "Vivaldi path is not configured. Run 'interceptor setup' first.".to_string()
+            );
+        }
+        // Read-only: auto-discover but tell the user what we found
+        let target = discovery::resolve_vivaldi(None)?;
+        eprintln!(
+            "Notice: No Vivaldi path configured. Auto-discovered: {}",
+            target.exe_path.display()
+        );
+        eprintln!("Run 'interceptor setup' to confirm or change this path.");
+        return Ok(target);
+    }
+    discovery::resolve_vivaldi(Some(Path::new(vivaldi_path.unwrap())))
 }
 
 fn run_jit_launch(target_hint: Option<&Path>, forwarded_args: &[String]) {
@@ -336,27 +376,23 @@ fn run_setup(portable: bool, path_arg: Option<&str>) {
             println!("✓ Resources path: {}", target.resources_dir.display());
 
             config.vivaldi_path = Some(target.exe_path.to_string_lossy().to_string());
+            let before_count = config.mods.len();
 
-            let mut imported = 0;
             let existing_user_mods = target.resources_dir.join("user_mods");
             if existing_user_mods.exists() {
-                if let Ok(count) = config.auto_import_from_dir(&existing_user_mods) {
-                    imported += count;
-                }
+                let _ = config.auto_import_from_dir(&existing_user_mods);
             }
 
             let vivaldi_mods_backup = target.app_dir.join(".vivaldimods").join(&target.version);
             if vivaldi_mods_backup.exists() {
-                if let Ok(count) = config.auto_import_from_dir(&vivaldi_mods_backup) {
-                    imported += count;
-                }
+                let _ = config.auto_import_from_dir(&vivaldi_mods_backup);
             }
 
-            if let Ok(rescan_count) = config.rescan_mods() {
-                imported += rescan_count;
-            }
+            // Pick up any pre-existing files in user_mods/ not yet registered
+            let _ = config.rescan_mods();
 
-            println!("✓ Auto-imported/registered {} mods into configuration", imported);
+            let imported = config.mods.len().saturating_sub(before_count);
+            println!("\u{2713} Auto-imported/registered {} unique mod(s) into configuration", imported);
 
             if let Err(e) = config.save() {
                 eprintln!("Failed to save config: {}", e);
@@ -381,10 +417,32 @@ fn run_setup(portable: bool, path_arg: Option<&str>) {
 }
 
 fn run_status(as_json: bool) {
+    let config_exists = ModConfig::is_configured();
     let config = ModConfig::load().unwrap_or_default();
+
+    if !config_exists && !as_json {
+        eprintln!("Notice: No configuration found — run 'interceptor setup' first.");
+        eprintln!("Showing status using auto-discovery...");
+        eprintln!();
+    }
+
     let exe_name = &config.exe_name;
     let hook_status = os_hook::get_hook_status(exe_name);
-    let target_result = discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new));
+
+    // Notify user when Vivaldi path is unconfigured and auto-discovery runs
+    let target_result = if config.vivaldi_path.is_none() {
+        let result = discovery::resolve_vivaldi(None);
+        if !as_json {
+            if let Ok(ref t) = result {
+                eprintln!("Notice: No Vivaldi path configured. Auto-discovered: {}", t.exe_path.display());
+                eprintln!("Run 'interceptor setup' to confirm or change this path.");
+                eprintln!();
+            }
+        }
+        result
+    } else {
+        discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new))
+    };
 
     let (vivaldi_found, vivaldi_exe, version, patched) = match &target_result {
         Ok(t) => {
@@ -469,9 +527,43 @@ fn run_status(as_json: bool) {
     }
 }
 
-fn run_list_mods(as_json: bool) {
-    let mut config = ModConfig::load().unwrap_or_default();
-    let _ = config.rescan_mods();
+fn run_list_mods(as_json: bool, rescan: bool) {
+    // Hard gate: list-mods requires an existing config (setup must have been run)
+    let mut config = match ModConfig::load_or_require_setup() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if rescan {
+        match config.rescan_mods() {
+            Ok(n) => {
+                if n > 0 {
+                    if let Err(e) = config.save() {
+                        eprintln!("Warning: could not save after rescan: {}", e);
+                    } else if !as_json {
+                        println!("\u{2713} Discovered and registered {} new mod(s).", n);
+                    }
+                } else if !as_json {
+                    println!("\u{2713} No new mods found during rescan.");
+                }
+            }
+            Err(e) => eprintln!("Rescan warning: {}", e),
+        }
+    } else {
+        // Check for unregistered files on disk and hint at --rescan
+        let css_untracked = count_untracked_in_dir(&ModConfig::get_css_dir(), &config);
+        let js_untracked = count_untracked_in_dir(&ModConfig::get_js_dir(), &config);
+        let total_untracked = css_untracked + js_untracked;
+        if total_untracked > 0 && !as_json {
+            eprintln!(
+                "Tip: {} file(s) in user_mods/ are not registered. Run 'interceptor list-mods --rescan' to pick them up.",
+                total_untracked
+            );
+        }
+    }
 
     if as_json {
         let json = serde_json::to_string_pretty(&config.mods).unwrap_or_default();
@@ -502,11 +594,11 @@ fn run_list_mods(as_json: bool) {
 }
 
 fn run_toggle(mod_name: &str) {
-    let mut config = match ModConfig::load() {
+    let mut config = match ModConfig::load_or_require_setup() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to load config: {}", e);
-            return;
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
         }
     };
 
@@ -526,11 +618,11 @@ fn run_toggle(mod_name: &str) {
 
 fn run_import(file_path_str: &str) {
     let path = PathBuf::from(file_path_str);
-    let mut config = match ModConfig::load() {
+    let mut config = match ModConfig::load_or_require_setup() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to load config: {}", e);
-            return;
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
         }
     };
 
@@ -547,20 +639,42 @@ fn run_import(file_path_str: &str) {
 }
 
 fn run_patch_command() {
-    let config = ModConfig::load().unwrap_or_default();
+    // Hard gate: patch writes files and requires a properly configured installation
+    let config = match ModConfig::load_or_require_setup() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Require an explicitly configured Vivaldi path — never silently auto-discover for writes
+    if config.vivaldi_path.is_none() {
+        eprintln!("Error: Vivaldi path is not configured.");
+        eprintln!("Run 'interceptor setup' to select your Vivaldi installation.");
+        std::process::exit(1);
+    }
+
+    // Warn the user if no mods are enabled so they understand what will happen
+    let enabled = config.mods.iter().filter(|m| m.enabled).count();
+    if enabled == 0 {
+        eprintln!("Warning: No mods are enabled — the compiled bundle will be empty.");
+        eprintln!("Use 'interceptor list-mods' or 'interceptor setup' to register mods.");
+    }
+
     match discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new)) {
         Ok(target) => {
             match bundler::compile_bundle(&config, &target.resources_dir) {
-                Ok(b) => println!("✓ Compiled bundle ({} CSS, {} JS)", b.css_count, b.js_count),
+                Ok(b) => println!("\u{2713} Compiled bundle ({} CSS, {} JS)", b.css_count, b.js_count),
                 Err(e) => eprintln!("Error compiling bundle: {}", e),
             }
 
             match patcher::patch_window_html(&target.window_html) {
                 Ok(newly_patched) => {
                     if newly_patched {
-                        println!("✓ Patched window.html at {}", target.window_html.display());
+                        println!("\u{2713} Patched window.html at {}", target.window_html.display());
                     } else {
-                        println!("✓ window.html is already patched.");
+                        println!("\u{2713} window.html is already patched.");
                     }
                 }
                 Err(e) => eprintln!("Error patching window.html: {}", e),
@@ -570,15 +684,29 @@ fn run_patch_command() {
     }
 }
 
-fn run_unpatch_command() {
-    let config = ModConfig::load().unwrap_or_default();
+fn run_unpatch_command(clean: bool) {
+    // Hard gate: unpatch modifies and deletes files
+    let config = match ModConfig::load_or_require_setup() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if config.vivaldi_path.is_none() {
+        eprintln!("Error: Vivaldi path is not configured.");
+        eprintln!("Run 'interceptor setup' to select your Vivaldi installation.");
+        std::process::exit(1);
+    }
+
     match discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new)) {
         Ok(target) => {
             // 1. Remove vivaldi_real.exe if present
             match launcher::remove_real_executable(&target.exe_path) {
                 Ok(removed) => {
                     if removed {
-                        println!("✓ Removed hardlink launcher: {}", launcher::get_real_executable_path(&target.exe_path).display());
+                        println!("\u{2713} Removed hardlink launcher: {}", launcher::get_real_executable_path(&target.exe_path).display());
                     }
                 }
                 Err(e) => eprintln!("Notice: {}", e),
@@ -588,14 +716,14 @@ fn run_unpatch_command() {
             let bundle_css = target.resources_dir.join("inject_bundle.css");
             if bundle_css.exists() {
                 match std::fs::remove_file(&bundle_css) {
-                    Ok(_) => println!("✓ Removed compiled stylesheet: {}", bundle_css.display()),
+                    Ok(_) => println!("\u{2713} Removed compiled stylesheet: {}", bundle_css.display()),
                     Err(e) => eprintln!("Error removing stylesheet {}: {}", bundle_css.display(), e),
                 }
             }
             let bundle_js = target.resources_dir.join("inject_bundle.js");
             if bundle_js.exists() {
                 match std::fs::remove_file(&bundle_js) {
-                    Ok(_) => println!("✓ Removed compiled script: {}", bundle_js.display()),
+                    Ok(_) => println!("\u{2713} Removed compiled script: {}", bundle_js.display()),
                     Err(e) => eprintln!("Error removing script {}: {}", bundle_js.display(), e),
                 }
             }
@@ -604,12 +732,26 @@ fn run_unpatch_command() {
             match patcher::unpatch_window_html(&target.window_html) {
                 Ok(restored) => {
                     if restored {
-                        println!("✓ Restored original window.html at {}", target.window_html.display());
+                        println!("\u{2713} Restored original window.html at {}", target.window_html.display());
                     } else {
                         println!("window.html was not patched.");
                     }
                 }
                 Err(e) => eprintln!("Error restoring window.html: {}", e),
+            }
+
+            // 4. Handle window.html.orig backup
+            let orig_path = target.resources_dir.join("window.html.orig");
+            if orig_path.exists() {
+                if clean {
+                    match std::fs::remove_file(&orig_path) {
+                        Ok(_) => println!("\u{2713} Removed backup file: {}", orig_path.display()),
+                        Err(e) => eprintln!("Error removing backup {}: {}", orig_path.display(), e),
+                    }
+                } else {
+                    println!("  Backup preserved at: {}", orig_path.display());
+                    println!("  (Run 'interceptor unpatch --clean' to also remove the backup)");
+                }
             }
         }
         Err(e) => eprintln!("Error discovering Vivaldi: {}", e),
@@ -617,7 +759,30 @@ fn run_unpatch_command() {
 }
 
 fn run_install_hook(path_arg: Option<&str>, target_arg: Option<&str>, non_interactive: bool) {
-    let mut config = ModConfig::load().unwrap_or_default();
+    // Hard gate: installing the IFEO hook on an unconfigured system will intercept
+    // Vivaldi but apply zero mods, which is confusing.
+    let mut config = match ModConfig::load_or_require_setup() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Warn if no mods are registered yet
+    let enabled_count = config.mods.iter().filter(|m| m.enabled).count();
+    if enabled_count == 0 {
+        eprintln!("Warning: No mods are registered yet.");
+        eprintln!("Run 'interceptor setup' first to import your mods before installing the hook.");
+        eprint!("Continue anyway? [y/N]: ");
+        let _ = io::stdout().flush();
+        let mut answer = String::new();
+        let _ = io::stdin().read_line(&mut answer);
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            println!("Aborted. Run 'interceptor setup' to configure mods first.");
+            return;
+        }
+    }
 
     // If not non-interactive, always ask or confirm path with user interactively
     let target_path = if !non_interactive {
@@ -650,7 +815,7 @@ fn run_install_hook(path_arg: Option<&str>, target_arg: Option<&str>, non_intera
 
     match os_hook::install_hook(&exe_name, extra_elevation_args.as_deref()) {
         Ok(exe) => {
-            println!("✓ Successfully installed IFEO launch interceptor hook for '{}' in Windows Registry!", exe_name);
+            println!("\u{2713} Successfully installed IFEO launch interceptor hook for '{}' in Windows Registry!", exe_name);
             println!("Debugger path: {}", exe.display());
             println!("Vivaldi will now automatically launch through this interceptor.");
         }
@@ -682,6 +847,25 @@ fn run_uninstall_hook(target_arg: Option<&str>) {
     }
 }
 
+/// Count files in `dir` whose names are not already in `config.mods`.
+/// Used by list-mods to surface a hint without mutating state.
+fn count_untracked_in_dir(dir: &std::path::Path, config: &ModConfig) -> usize {
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                    if !config.mods.iter().any(|m| m.name.eq_ignore_ascii_case(fname)) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
 fn print_help() {
     println!(
 r#"Vivaldi JIT Mod Interceptor - Automatic CSS/JS Mod Loader
@@ -698,11 +882,16 @@ SUBCOMMANDS:
                             --path <PATH>        Specify vivaldi.exe or parent directory directly
                             --select-path        Force interactive selection menu
     status [--json]       Display hook status, storage mode, Vivaldi installation info, and mod stats
-    list-mods [--json]    List all registered mods, load order, and their enabled/disabled states
+    list-mods [OPTS]      List all registered mods, load order, and their enabled/disabled states
+                          Options:
+                            --json               Output as JSON
+                            --rescan             Scan user_mods/ for new files and register them
     toggle <MOD_NAME>     Toggle a mod between enabled and disabled
     import <FILE_PATH>    Import a new .css or .js mod file into the manager
     patch                 Manually compile bundles and patch window.html
-    unpatch               Restore pristine window.html without mod hooks
+    unpatch [OPTS]        Restore pristine window.html without mod hooks
+                          Options:
+                            --clean              Also delete the window.html.orig backup
     install-hook [OPTS]   Register IFEO debugger hook (elevates via UAC if needed)
                           Options:
                             --path <PATH>        Specify target vivaldi.exe or directory
@@ -710,6 +899,7 @@ SUBCOMMANDS:
     uninstall-hook [OPTS] Remove IFEO debugger hook (elevates via UAC if needed)
                           Options:
                             --target <EXE_NAME>  Specify target exe name (default: vivaldi.exe)
+    version               Print version information
     help                  Print this help message
 "#);
 }

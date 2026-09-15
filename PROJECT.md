@@ -240,6 +240,24 @@ Whenever modifications are made to this codebase, developers/agents must adhere 
 
 ## 8. Change Log
 
+### [v0.1.4] - 2026-09-15
+
+**UX Fixes — All 10 issues from the fresh-user audit resolved:**
+
+- **Fix (#9)**: Running `interceptor` with no arguments on an unconfigured system now shows a friendly onboarding message (path to config, `setup` and `help` commands) and exits cleanly instead of silently firing the JIT launch path with zero effect.
+- **Fix (#8)**: Version string is now derived from `env!("CARGO_PKG_VERSION")` in `Cargo.toml` — it can no longer drift. `Cargo.toml` bumped to v0.1.4.
+- **Fix (#2)**: `run_status` prints an explicit notice whenever Vivaldi is auto-discovered (i.e. `vivaldi_path` is `None` in config), naming the discovered path and directing the user to `setup`.
+- **Fix (#1/#3)**: `patch` is now a hard-gated command: it requires `mods_config.json` to exist and `vivaldi_path` to be set. Missing either produces a clear error with `setup` guidance. It also warns when 0 mods are enabled before compiling an empty bundle.
+- **Fix (#4)**: Added `ModConfig::load_or_require_setup()` to `config.rs` — returns a guided error ("Setup has not been run yet…") instead of `unwrap_or_default()`. Applied to: `list-mods`, `toggle`, `import`, `patch`, `unpatch`, `install-hook`.
+- **Fix (#5)**: `list-mods` no longer calls `rescan_mods()` unconditionally. It is now read-only by default and only shows the saved config. A new `--rescan` flag triggers an explicit rescan that saves the result. If untracked files exist on disk, a tip is printed without mutating state.
+- **Fix (#5 root)**: `rescan_mods()` in `config.rs` no longer calls `self.save()` internally. Save is now the caller's explicit responsibility, preventing silent config mutation from read-only operations.
+- **Fix (#6)**: `unpatch` now tells the user about the `window.html.orig` backup left in place, and accepts a `--clean` flag to also remove it.
+- **Fix (#7)**: Import count in `setup` no longer inflates through triple-counting. Count is now computed as `config.mods.len()` delta before vs. after all import/rescan calls, accurately reflecting truly unique newly-registered mods.
+- **Fix (#10)**: `install-hook` checks for `mods_config.json` existence (hard gate) and warns with a `[y/N]` prompt if no mods are registered, preventing the hook from being installed on an empty installation.
+- **Feature**: `ModConfig::is_configured()` added — cheap filesystem check used by the onboarding path and `run_status`.
+- **Feature**: `resolve_vivaldi_with_notice()` helper added for future callers that need auto-discovery with user notification.
+- **Docs**: `print_help()` updated to document `--rescan` (list-mods), `--clean` (unpatch), and `version` subcommand.
+
 ### [v0.1.3] - 2026-09-15
 - **Fix**: Interactive path selection menu now prompts consistently during both `interceptor setup` and `interceptor install-hook`, even when running within an already-elevated Administrator console or when `mods_config.json` already has a configured path.
 - **Fix**: Seamless elevation forwarding during `install-hook`—the chosen target path is automatically passed as an argument (`--non-interactive --path "<path>"`), preventing duplicate prompts or profile mismatches across elevation boundaries.
