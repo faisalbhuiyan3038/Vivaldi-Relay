@@ -11,7 +11,9 @@
 ### Key Value Propositions
 - **Zero Background Resource Footprint**: Does not run a persistent background watcher or polling service. Runs synchronously for 2–5 milliseconds only during browser invocation.
 - **Update-Proof Mod Injection**: When Vivaldi auto-updates and creates a fresh version folder (wiping custom mod hooks), the interceptor automatically catches the next launch, restores mod files, re-patches `window.html`, and compiles the bundle before the UI paints.
+- **Pure Injection Policy**: Leaves all other user scripts, comments, and tags in `window.html` completely untouched. Only inserts its own hook tag.
 - **Safe Browser Access (Zero Lockout)**: If disk corruption, permission failure, or mod syntax errors occur, a native Win32 dialog allows launching unmodded Vivaldi immediately.
+- **Portable & Multi-Drive Aware**: Dynamically detects all Windows logical drives (A–Z), supports Vivaldi Snapshot, and includes a first-class Portable Mode.
 
 ---
 
@@ -34,20 +36,24 @@
    (setup, status,                │
    toggle, list, etc.)            ▼
                      [1. Resolve Vivaldi Installation]
-                     - Query HKCU/HKLM App Paths
-                     - Scan latest semantic version folder
+                     - Query HKCU/HKLM App Paths (Standard & Snapshot)
+                     - Scan all logical drives (A-Z) via GetLogicalDrives
+                     - Resolve latest semantic version directory
                                   │
                                   ▼
-                     [2. Idempotent Patch Verification]
+                     [2. Idempotent Pure Patch Verification]
                      - Check window.html for injection hook
                      - If missing: backup to window.html.orig
                      - Atomically inject <script src="inject_bundle.js">
+                     - Preserve all other user modifications untouched
                                   │
                                   ▼
                      [3. Dynamic CSP Bundle Compilation]
-                     - Read enabled mods from %APPDATA%
+                     - Read enabled mods from active storage (AppData or Portable)
+                     - Sort mods by order priority ascending, then name
                      - Combine CSS -> inject_bundle.css
                      - Wrap JS mods in isolated IIFEs + try/catch
+                     - Inject configurable UI readiness selector & delay
                      - Output to <version>\resources\vivaldi\
                                   │
                                   ▼
@@ -76,7 +82,7 @@ However, if `interceptor.exe` attempts to execute `vivaldi.exe` (even with flags
 To bypass IFEO with zero latency and zero disk penalty:
 1. In the Vivaldi Application directory, the interceptor creates an NTFS hardlink:
    ```text
-   M:\Vivaldi\Application\vivaldi_real.exe -> M:\Vivaldi\Application\vivaldi.exe
+   <VivaldiDir>\Application\vivaldi_real.exe -> <VivaldiDir>\Application\vivaldi.exe
    ```
 2. Hardlinks take **<0.01ms** to create and consume **0 bytes** of additional disk storage.
 3. The IFEO registry key is only registered for `vivaldi.exe`. Because Windows checks IFEO based on the file name being executed, launching `vivaldi_real.exe` **completely bypasses IFEO**.
@@ -85,28 +91,57 @@ To bypass IFEO with zero latency and zero disk penalty:
 
 ---
 
-### 2.3 Chromium CSP-Compliant Bundling
+### 2.3 Dynamic Drive Discovery & Snapshot Support
 
-Vivaldi's UI document (`window.html`) runs under a restricted Chromium extension origin (`chrome-extension://...`). Loading user mods via `file:///C:/Users/...` paths fails due to strict Content Security Policy (CSP) blocking external file schemas.
+Instead of hardcoding drive letters, the interceptor queries all active logical drives via the Win32 API `GetLogicalDrives()`. For every active volume (`C:`, `D:`, `E:`, `M:`, etc.), it checks:
+- Standard Vivaldi paths (`<Drive>:\Vivaldi\Application\vivaldi.exe`)
+- Vivaldi Snapshot paths (`<Drive>:\Vivaldi Snapshot\Application\vivaldi.exe`)
+- Program Files and PortableApps directories
+- Registry `App Paths` for both stable and snapshot builds
+
+---
+
+### 2.4 Chromium CSP-Compliant Bundling & Configurable Readiness
+
+Vivaldi's UI document (`window.html`) runs under a restricted Chromium extension origin (`chrome-extension://...`). Loading user mods via `file:///` paths fails due to strict Content Security Policy (CSP).
 
 The interceptor resolves this by generating local bundle files directly within `<version_dir>\resources\vivaldi\`:
-- **`inject_bundle.css`**: Aggregates all enabled CSS mods.
+- **`inject_bundle.css`**: Aggregates all enabled CSS mods in ascending order priority.
 - **`inject_bundle.js`**:
   - Dynamically injects `<link rel="stylesheet" href="inject_bundle.css">` into `<head>`.
-  - Implements DOM readiness polling (`#browser` root container check).
+  - Implements DOM readiness polling using the configurable selector (`config.ui_ready_selector`, default `"#browser"`).
+  - Enforces configurable initialization delay (`config.init_delay_ms`, default `60ms`).
   - Encapsulates every enabled JS mod in an isolated IIFE with dedicated `try...catch` logging to ensure a faulty mod never crashes the Vivaldi browser window.
 
 ---
 
-## 3. Directory Layout & Data Boundaries
+## 3. Directory Layout & Storage Modes
 
+The interceptor supports two storage modes: **Standard Mode** (default) and **Portable Mode**.
+
+### 3.1 Standard Mode (%APPDATA%)
 ```
 %APPDATA%\VivaldiModManager\               <-- Safe from browser updates
 ├── mods_config.json                       <-- Configuration & mod state registry
 └── user_mods\
     ├── css\                               <-- Raw CSS mod source files
     └── js\                                <-- Raw JS mod source files
+```
 
+### 3.2 Portable Mode (Next to Binary)
+If `portable.lock`, `mods_config.json`, or a `user_mods/` folder exists directly in the directory of `interceptor.exe`, the application runs in self-contained Portable Mode:
+```
+<PortableDir>\
+├── interceptor.exe
+├── portable.lock                          <-- Marker file (optional, created via --portable)
+├── mods_config.json                       <-- Portable configuration
+└── user_mods\
+    ├── css\
+    └── js\
+```
+
+### 3.3 Target Browser Application Tree
+```
 <VivaldiDir>\Application\
 ├── vivaldi.exe                            <-- Intercepted target (IFEO)
 ├── vivaldi_real.exe                       <-- NTFS Hardlink (unintercepted execution)
@@ -124,52 +159,95 @@ The interceptor resolves this by generating local bundle files directly within `
 
 | Module | Location | Core Responsibilities |
 | :--- | :--- | :--- |
-| **`main.rs`** | `src/main.rs` | CLI argument routing, IFEO parameter detection, orchestration of JIT checks. |
+| **`main.rs`** | `src/main.rs` | CLI argument routing, interactive path selection menu, IFEO detection, JIT orchestration. |
 | **`launcher.rs`** | `src/launcher.rs` | Hardlink synchronization (`ensure_real_executable`), Win32 `CreateProcessW`, command-line quoting, and failsafe `MessageBoxW`. |
-| **`patcher.rs`** | `src/patcher.rs` | Idempotent modification of `window.html`, preservation of `.orig` backups, legacy script deduplication, and atomic `.tmp` file renaming. |
-| **`bundler.rs`** | `src/bundler.rs` | Aggregates enabled CSS/JS, creates error-trapping IIFEs, generates `#browser` UI readiness poller, mirrors files for legacy mod compatibility. |
-| **`discovery.rs`** | `src/discovery.rs` | Registry lookups (HKCU/HKLM App Paths), common installation directory scans, semantic version folder parser/sorter, UNC prefix cleaner. |
-| **`config.rs`** | `src/config.rs` | Schema serialization (`ModConfig`, `ModItem`), JSON persistence in `%APPDATA%`, auto-import from existing directories, mod toggling. |
-| **`os_hook.rs`** | `src/os_hook.rs` | Reads/writes IFEO `Debugger` key in `HKLM`, automatic UAC elevation via `ShellExecuteExW("runas")`, status reporter. |
+| **`patcher.rs`** | `src/patcher.rs` | Pure idempotent modification of `window.html` (leaves other user scripts intact), preservation of `.orig` backups, and atomic `.tmp` file renaming. |
+| **`bundler.rs`** | `src/bundler.rs` | Aggregates enabled CSS/JS, sorts by priority order, generates configurable DOM readiness poller, creates error-trapping IIFEs. |
+| **`discovery.rs`** | `src/discovery.rs` | Dynamic drive enumeration (`GetLogicalDrives`), registry lookups, snapshot detection, semantic version parser, UNC prefix cleaner. |
+| **`config.rs`** | `src/config.rs` | Schema serialization (`ModConfig`, `ModItem`), portable mode detection (`is_portable`), JSON persistence, mod toggling. |
+| **`os_hook.rs`** | `src/os_hook.rs` | Reads/writes IFEO `Debugger` key in `HKLM` for custom target exe names, automatic UAC elevation via `ShellExecuteExW("runas")`. |
 
 ---
 
-## 5. CLI Specification
+## 5. Configuration Schema (`mods_config.json`)
+
+```json
+{
+  "version": 1,
+  "vivaldi_path": "M:\\Vivaldi\\Application\\vivaldi.exe",
+  "auto_patch": true,
+  "ui_ready_selector": "#browser",
+  "init_delay_ms": 60,
+  "detach_timeout_ms": 5000,
+  "exe_name": "vivaldi.exe",
+  "mods": [
+    {
+      "name": "BetterAnimation.css",
+      "mod_type": "css",
+      "enabled": true,
+      "order": 0,
+      "description": ""
+    }
+  ]
+}
+```
+
+---
+
+## 6. CLI Specification
 
 ```
 USAGE:
-    interceptor [SUBCOMMAND]
+    interceptor [SUBCOMMAND] [OPTIONS]
     interceptor [VIVALDI_ARGUMENTS...]
 
 SUBCOMMANDS:
     launch [ARGS...]      JIT-checks Vivaldi, applies mods if needed, and launches
-    setup                 Initial setup: creates directories and auto-imports existing mods
-    status [--json]       Display hook status, Vivaldi installation info, and mod stats
-    list-mods [--json]    List all registered mods and their enabled/disabled states
+    setup [OPTIONS]       Initial setup: interactive path selection and mod auto-import
+                          Options:
+                            --portable           Enable portable mode in executable directory
+                            --path <PATH>        Specify vivaldi.exe or parent directory directly
+                            --select-path        Force interactive selection menu
+    status [--json]       Display hook status, storage mode, Vivaldi installation info, and mod stats
+    list-mods [--json]    List all registered mods, load order, and their enabled/disabled states
     toggle <MOD_NAME>     Toggle a mod between enabled and disabled
     import <FILE_PATH>    Import a new .css or .js mod file into the manager
     patch                 Manually compile bundles and patch window.html
     unpatch               Restore pristine window.html without mod hooks
-    install-hook          Register IFEO debugger hook (elevates via UAC if needed)
-    uninstall-hook        Remove IFEO debugger hook (elevates via UAC if needed)
+    install-hook [OPTS]   Register IFEO debugger hook (elevates via UAC if needed)
+                          Options:
+                            --path <PATH>        Specify target vivaldi.exe or directory
+                            --target <EXE_NAME>  Specify target exe name (default: vivaldi.exe)
+    uninstall-hook [OPTS] Remove IFEO debugger hook (elevates via UAC if needed)
+                          Options:
+                            --target <EXE_NAME>  Specify target exe name (default: vivaldi.exe)
     help                  Print this help message
 ```
 
 ---
 
-## 6. Living Maintenance & Change Protocol
+## 7. Living Maintenance & Change Protocol
 
 Whenever modifications are made to this codebase, developers/agents must adhere to the following protocol:
 
 1. **Keep Hardlinks Intact**: Do **not** revert process creation to direct `vivaldi.exe` with debugger flags. Windows kernel IFEO checks the target image name, which causes recursive loops.
-2. **Preserve Idempotency**: All patching logic must check for existence of hooks before editing `window.html`. Never inject twice.
-3. **Pristine Backups**: Never overwrite `window.html.orig` if it already exists; it holds the unmodded baseline from the Vivaldi installer.
-4. **Maintain Test Coverage**: Run `cargo test` before submitting changes. Ensure unit tests in `tests/patcher_tests.rs` remain isolated using `VIVALDI_MOD_MANAGER_DIR`.
-5. **Update Changelog Below**: Log every notable change in Section 7.
+2. **Pure Injections Only**: Never delete or comment out other scripts in `window.html`. Only inject/remove the interceptor's own hook tag.
+3. **Preserve Idempotency**: All patching logic must check for existence of hooks before editing `window.html`. Never inject twice.
+4. **Pristine Backups**: Never overwrite `window.html.orig` if it already exists; it holds the unmodded baseline from the Vivaldi installer.
+5. **Maintain Test Coverage**: Run `cargo test` before submitting changes. Ensure unit tests in `tests/patcher_tests.rs` remain isolated using `VIVALDI_MOD_MANAGER_DIR`.
+6. **Update Changelog Below**: Log every notable change in Section 8.
 
 ---
 
-## 7. Change Log
+## 8. Change Log
+
+### [v0.1.2] - 2026-09-15
+- **Feature**: Replaced hardcoded drive letters (`[M, D, E, C]`) with dynamic logical drive scanning via `GetLogicalDrives()`, detecting all active drives (A–Z) across the system.
+- **Feature**: Added interactive Vivaldi installation selection menu with guidelines, discovered candidate lists, and support for manual custom path input.
+- **Feature**: Added first-class **Portable Storage Mode** (`--portable` flag and automatic detection of local `portable.lock`/`mods_config.json`).
+- **Feature**: Added configurable DOM readiness selector (`ui_ready_selector`), initialization delay (`init_delay_ms`), detach timeout (`detach_timeout_ms`), and custom executable name (`exe_name`) in `mods_config.json`.
+- **Feature**: Added explicit mod load prioritization (`order` field in `ModItem`).
+- **Policy**: Enforced **Pure Injection Policy** in `patcher.rs`, completely removing assumptions/comments regarding legacy user mods (`injectMods.js`) and keeping all existing HTML untouched.
 
 ### [v0.1.1] - 2026-09-15
 - **Fix (Critical)**: Resolved IFEO infinite recursion loop by transitioning from `DEBUG_ONLY_THIS_PROCESS` to the **NTFS Hardlink Bypass** pattern (`vivaldi_real.exe`).

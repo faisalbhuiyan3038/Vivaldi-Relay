@@ -19,6 +19,7 @@ impl ModType {
         }
     }
 
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             ModType::Css => "css",
@@ -33,14 +34,45 @@ pub struct ModItem {
     pub mod_type: ModType,
     pub enabled: bool,
     #[serde(default)]
+    pub order: i32,
+    #[serde(default)]
     pub description: String,
+}
+
+fn default_auto_patch() -> bool {
+    true
+}
+
+fn default_ui_ready_selector() -> String {
+    "#browser".to_string()
+}
+
+fn default_init_delay_ms() -> u64 {
+    60
+}
+
+fn default_detach_timeout_ms() -> u32 {
+    5000
+}
+
+fn default_exe_name() -> String {
+    "vivaldi.exe".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModConfig {
     pub version: u32,
     pub vivaldi_path: Option<String>,
+    #[serde(default = "default_auto_patch")]
     pub auto_patch: bool,
+    #[serde(default = "default_ui_ready_selector")]
+    pub ui_ready_selector: String,
+    #[serde(default = "default_init_delay_ms")]
+    pub init_delay_ms: u64,
+    #[serde(default = "default_detach_timeout_ms")]
+    pub detach_timeout_ms: u32,
+    #[serde(default = "default_exe_name")]
+    pub exe_name: String,
     pub mods: Vec<ModItem>,
 }
 
@@ -50,15 +82,62 @@ impl Default for ModConfig {
             version: 1,
             vivaldi_path: None,
             auto_patch: true,
+            ui_ready_selector: default_ui_ready_selector(),
+            init_delay_ms: default_init_delay_ms(),
+            detach_timeout_ms: default_detach_timeout_ms(),
+            exe_name: default_exe_name(),
             mods: Vec::new(),
         }
     }
 }
 
 impl ModConfig {
+    pub fn is_portable() -> bool {
+        if std::env::var("VIVALDI_MOD_MANAGER_DIR").is_ok() {
+            return false;
+        }
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                return exe_dir.join("portable.lock").exists()
+                    || exe_dir.join("mods_config.json").exists()
+                    || exe_dir.join("user_mods").is_dir();
+            }
+        }
+        false
+    }
+
+    pub fn enable_portable_mode() -> Result<PathBuf, String> {
+        let exe_path = std::env::current_exe()
+            .map_err(|e| format!("Failed to get current executable path: {}", e))?;
+        let exe_dir = exe_path
+            .parent()
+            .ok_or_else(|| "Failed to get executable directory".to_string())?;
+
+        let lock_file = exe_dir.join("portable.lock");
+        if !lock_file.exists() {
+            fs::write(&lock_file, "portable")
+                .map_err(|e| format!("Failed to create portable.lock: {}", e))?;
+        }
+        Ok(exe_dir.to_path_buf())
+    }
+
     pub fn get_app_dir() -> PathBuf {
         if let Ok(custom) = std::env::var("VIVALDI_MOD_MANAGER_DIR") {
             PathBuf::from(custom)
+        } else if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                if exe_dir.join("portable.lock").exists()
+                    || exe_dir.join("mods_config.json").exists()
+                    || exe_dir.join("user_mods").is_dir()
+                {
+                    return exe_dir.to_path_buf();
+                }
+            }
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                PathBuf::from(appdata).join("VivaldiModManager")
+            } else {
+                PathBuf::from(".").join(".vivaldi_mod_manager")
+            }
         } else if let Ok(appdata) = std::env::var("APPDATA") {
             PathBuf::from(appdata).join("VivaldiModManager")
         } else {
@@ -197,11 +276,14 @@ impl ModConfig {
                 name: file_name.clone(),
                 mod_type,
                 enabled: true,
+                order: 0,
                 description: String::new(),
             });
         }
 
-        self.mods.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        self.mods.sort_by(|a, b| {
+            a.order.cmp(&b.order).then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+        });
         self.save()?;
         Ok(file_name)
     }
@@ -257,6 +339,7 @@ impl ModConfig {
                                         name: file_name.to_string(),
                                         mod_type: expected_type,
                                         enabled: true,
+                                        order: 0,
                                         description: String::new(),
                                     });
                                     count += 1;
@@ -273,7 +356,9 @@ impl ModConfig {
         newly_found += scan_folder(Self::get_js_dir(), ModType::Js, &mut self.mods);
 
         if newly_found > 0 {
-            self.mods.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+            self.mods.sort_by(|a, b| {
+                a.order.cmp(&b.order).then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+            });
             self.save()?;
         }
 

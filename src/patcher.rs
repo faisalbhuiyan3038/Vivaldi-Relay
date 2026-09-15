@@ -43,7 +43,7 @@ pub fn patch_window_html(window_html_path: &Path) -> Result<bool, String> {
         .map_err(|e| format!("Failed to write temporary file {}: {}", tmp_path.display(), e))?;
 
     if let Err(e) = fs::rename(&tmp_path, window_html_path) {
-        // If rename fails (e.g. across drives or Windows file lock overwrite), fallback to copy + remove
+        // Fallback to copy + remove if cross-volume or lock overwrite occurs
         fs::copy(&tmp_path, window_html_path)
             .map_err(|e2| format!("Failed to replace {}: {} (rename error: {})", window_html_path.display(), e2, e))?;
         let _ = fs::remove_file(&tmp_path);
@@ -64,7 +64,7 @@ pub fn unpatch_window_html(window_html_path: &Path) -> Result<bool, String> {
         return Ok(true);
     }
 
-    // Otherwise remove injected lines manually
+    // Otherwise remove injected lines manually without altering other user scripts
     let content = fs::read_to_string(window_html_path)
         .map_err(|e| format!("Failed to read {}: {}", window_html_path.display(), e))?;
 
@@ -85,26 +85,17 @@ pub fn unpatch_window_html(window_html_path: &Path) -> Result<bool, String> {
 }
 
 pub fn inject_into_html(html: &str) -> String {
-    // If legacy injectMods.js is present and not commented out, comment it out
-    let cleaned_html = if html.contains(r#"<script src="injectMods.js"></script>"#) {
-        html.replace(
-            r#"<script src="injectMods.js"></script>"#,
-            r#"<!-- <script src="injectMods.js"></script> (Replaced by Vivaldi JIT Mod Interceptor) -->"#,
-        )
-    } else {
-        html.to_string()
-    };
-
-    let lower = cleaned_html.to_ascii_lowercase();
+    // Pure injection: keep all existing user code untouched, only inject our hook before </body>
+    let lower = html.to_ascii_lowercase();
     if let Some(pos) = lower.rfind("</body>") {
-        let mut result = String::with_capacity(cleaned_html.len() + HOOK_SCRIPT_TAG.len() + 10);
-        result.push_str(&cleaned_html[..pos]);
+        let mut result = String::with_capacity(html.len() + HOOK_SCRIPT_TAG.len() + 10);
+        result.push_str(&html[..pos]);
         result.push_str(HOOK_SCRIPT_TAG);
         result.push('\n');
-        result.push_str(&cleaned_html[pos..]);
+        result.push_str(&html[pos..]);
         result
     } else {
         // Fallback: append at the end
-        format!("{}\n{}\n", cleaned_html, HOOK_SCRIPT_TAG)
+        format!("{}\n{}\n", html, HOOK_SCRIPT_TAG)
     }
 }

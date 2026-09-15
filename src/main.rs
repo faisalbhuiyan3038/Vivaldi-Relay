@@ -8,6 +8,7 @@ mod patcher;
 use config::{ModConfig, ModType};
 use discovery::VivaldiTarget;
 use os_hook::HookStatus;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -36,7 +37,10 @@ fn main() {
             run_jit_launch(None, forwarded);
         }
         "setup" => {
-            run_setup();
+            let portable = args.iter().any(|a| a == "--portable");
+            let path_arg = get_flag_value(&args, "--path").or_else(|| get_flag_value(&args, "-p"));
+            let select = args.iter().any(|a| a == "--select-path");
+            run_setup(portable, path_arg.as_deref(), select);
         }
         "status" => {
             let as_json = args.iter().any(|a| a == "--json");
@@ -67,16 +71,19 @@ fn main() {
             run_unpatch_command();
         }
         "install-hook" => {
-            run_install_hook();
+            let path_arg = get_flag_value(&args, "--path").or_else(|| get_flag_value(&args, "-p"));
+            let target_arg = get_flag_value(&args, "--target");
+            run_install_hook(path_arg.as_deref(), target_arg.as_deref());
         }
         "uninstall-hook" => {
-            run_uninstall_hook();
+            let target_arg = get_flag_value(&args, "--target");
+            run_uninstall_hook(target_arg.as_deref());
         }
         "help" | "--help" | "-h" => {
             print_help();
         }
         "version" | "--version" | "-v" => {
-            println!("Vivaldi JIT Mod Interceptor v0.1.0");
+            println!("Vivaldi JIT Mod Interceptor v0.1.2");
         }
         _ => {
             // Forward any unrecognized first argument directly as browser argument (e.g. URL)
@@ -84,6 +91,18 @@ fn main() {
             run_jit_launch(None, forwarded);
         }
     }
+}
+
+fn get_flag_value(args: &[String], flag: &str) -> Option<String> {
+    for (i, arg) in args.iter().enumerate() {
+        if arg == flag && i + 1 < args.len() {
+            return Some(args[i + 1].clone());
+        }
+        if let Some(stripped) = arg.strip_prefix(&format!("{}=", flag)) {
+            return Some(stripped.to_string());
+        }
+    }
+    None
 }
 
 fn run_jit_launch(target_hint: Option<&Path>, forwarded_args: &[String]) {
@@ -116,7 +135,7 @@ fn run_jit_launch(target_hint: Option<&Path>, forwarded_args: &[String]) {
         }
     }
 
-    // Launch Vivaldi with IFEO recursion prevention
+    // Launch Vivaldi with IFEO hardlink bypass
     if let Err(launch_err) = launcher::launch_vivaldi(&target.exe_path, forwarded_args) {
         eprintln!("[VivaldiModInterceptor] Launch failed: {}", launch_err);
         launcher::prompt_launch_without_mods(&launch_err);
@@ -143,19 +162,181 @@ fn ensure_patched_and_bundled(config: &mut ModConfig, target: &VivaldiTarget) ->
     Ok(())
 }
 
-fn run_setup() {
+fn select_or_confirm_vivaldi_path(
+    explicit_arg: Option<&str>,
+    force_interactive: bool,
+    config: &mut ModConfig,
+) -> Result<PathBuf, String> {
+    // 1. Explicit CLI argument given
+    if let Some(arg) = explicit_arg {
+        let p = PathBuf::from(arg.trim().trim_matches('"'));
+        let target_exe = if p.is_file() {
+            p
+        } else if p.is_dir() {
+            if p.join("vivaldi.exe").is_file() {
+                p.join("vivaldi.exe")
+            } else if p.join("vivaldi_snapshot.exe").is_file() {
+                p.join("vivaldi_snapshot.exe")
+            } else {
+                return Err(format!("No vivaldi.exe found in directory {}", p.display()));
+            }
+        } else {
+            return Err(format!("Specified path does not exist: {}", p.display()));
+        };
+
+        let clean = discovery::strip_unc_prefix(&target_exe.canonicalize().unwrap_or(target_exe));
+        config.vivaldi_path = Some(clean.to_string_lossy().to_string());
+        if let Some(file_name) = clean.file_name().and_then(|n| n.to_str()) {
+            config.exe_name = file_name.to_string();
+        }
+        let _ = config.save();
+        return Ok(clean);
+    }
+
+    let discovered = discovery::discover_all_installations();
+
+    // If not forced interactive and already configured with a valid path
+    if !force_interactive {
+        if let Some(existing) = &config.vivaldi_path {
+            let p = PathBuf::from(existing);
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+    }
+
+    // Interactive prompt
+    println!("\n=== Vivaldi Installation Selection ===");
+    println!("Specify where Vivaldi is installed on this machine.");
+    println!("Note: You can specify either the full path to 'vivaldi.exe'");
+    println!("(e.g., M:\\Vivaldi\\Application\\vivaldi.exe)");
+    println!("or the folder where 'vivaldi.exe' lives (e.g., M:\\Vivaldi\\Application).\n");
+
+    if !discovered.is_empty() {
+        println!("Discovered installation(s):");
+        for (i, inst) in discovered.iter().enumerate() {
+            let kind = if inst.is_snapshot { " [Snapshot]" } else { "" };
+            println!("  [{}] {}{} (version {})", i + 1, inst.exe_path.display(), kind, inst.version);
+        }
+        println!("  [C] Specify custom path manually");
+    } else {
+        println!("No standard Vivaldi installations were automatically discovered.");
+        println!("  [C] Specify custom path manually");
+    }
+
+    let default_choice = if let Some(existing) = &config.vivaldi_path {
+        println!("\nPress Enter to keep current path: [{}]", existing);
+        Some(existing.clone())
+    } else if let Some(first) = discovered.first() {
+        println!("\nPress Enter to use default: [{}]", first.exe_path.display());
+        Some(first.exe_path.to_string_lossy().to_string())
+    } else {
+        None
+    };
+
+    print!("Selection: ");
+    let _ = io::stdout().flush();
+
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() || input.trim().is_empty() {
+        if let Some(def) = default_choice {
+            let p = PathBuf::from(def);
+            config.vivaldi_path = Some(p.to_string_lossy().to_string());
+            if let Some(file_name) = p.file_name().and_then(|n| n.to_str()) {
+                config.exe_name = file_name.to_string();
+            }
+            let _ = config.save();
+            return Ok(p);
+        }
+    }
+
+    let trimmed = input.trim().trim_matches('"');
+
+    if let Ok(idx) = trimmed.parse::<usize>() {
+        if idx >= 1 && idx <= discovered.len() {
+            let chosen = &discovered[idx - 1];
+            println!("✓ Selected: {}", chosen.exe_path.display());
+            config.vivaldi_path = Some(chosen.exe_path.to_string_lossy().to_string());
+            config.exe_name = chosen
+                .exe_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("vivaldi.exe")
+                .to_string();
+            let _ = config.save();
+            return Ok(chosen.exe_path.clone());
+        }
+    }
+
+    let custom_path_str = if trimmed.eq_ignore_ascii_case("c") {
+        print!("Enter path to vivaldi.exe (or the folder where it lives): ");
+        let _ = io::stdout().flush();
+        let mut custom_input = String::new();
+        io::stdin().read_line(&mut custom_input).map_err(|e| e.to_string())?;
+        custom_input.trim().trim_matches('"').to_string()
+    } else {
+        trimmed.to_string()
+    };
+
+    let p = PathBuf::from(&custom_path_str);
+    let target_exe = if p.is_file() {
+        p
+    } else if p.is_dir() {
+        if p.join("vivaldi.exe").is_file() {
+            p.join("vivaldi.exe")
+        } else if p.join("vivaldi_snapshot.exe").is_file() {
+            p.join("vivaldi_snapshot.exe")
+        } else {
+            return Err(format!("Could not find vivaldi.exe in directory {}", p.display()));
+        }
+    } else {
+        return Err(format!("Path does not exist: {}", p.display()));
+    };
+
+    let clean = discovery::strip_unc_prefix(&target_exe.canonicalize().unwrap_or(target_exe));
+    println!("✓ Selected custom path: {}", clean.display());
+    config.vivaldi_path = Some(clean.to_string_lossy().to_string());
+    if let Some(file_name) = clean.file_name().and_then(|n| n.to_str()) {
+        config.exe_name = file_name.to_string();
+    }
+    let _ = config.save();
+    Ok(clean)
+}
+
+fn run_setup(portable: bool, path_arg: Option<&str>, select: bool) {
     println!("=== Vivaldi JIT Mod Interceptor: Setup ===");
+
+    if portable {
+        match ModConfig::enable_portable_mode() {
+            Ok(dir) => println!("✓ Portable mode enabled in: {}", dir.display()),
+            Err(e) => eprintln!("Warning enabling portable mode: {}", e),
+        }
+    }
 
     if let Err(e) = ModConfig::ensure_directories() {
         eprintln!("Error creating mod directories: {}", e);
         return;
     }
-    println!("✓ Mod storage directory ready: {}", ModConfig::get_app_dir().display());
+
+    let mode_desc = if ModConfig::is_portable() {
+        "Portable Mode"
+    } else {
+        "Standard Mode (%APPDATA%)"
+    };
+    println!("✓ Mod storage directory ready ({}): {}", mode_desc, ModConfig::get_app_dir().display());
 
     let mut config = ModConfig::load().unwrap_or_default();
 
-    // Discover Vivaldi
-    match discovery::resolve_vivaldi(None) {
+    // Select or confirm Vivaldi path
+    let target_exe = match select_or_confirm_vivaldi_path(path_arg, select || config.vivaldi_path.is_none(), &mut config) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Path selection failed: {}", e);
+            return;
+        }
+    };
+
+    match discovery::resolve_vivaldi(Some(&target_exe)) {
         Ok(target) => {
             println!("✓ Discovered Vivaldi executable: {}", target.exe_path.display());
             println!("✓ Active Vivaldi version: {}", target.version);
@@ -163,7 +344,6 @@ fn run_setup() {
 
             config.vivaldi_path = Some(target.exe_path.to_string_lossy().to_string());
 
-            // Check if existing mods can be imported from target's user_mods or .vivaldimods
             let mut imported = 0;
             let existing_user_mods = target.resources_dir.join("user_mods");
             if existing_user_mods.exists() {
@@ -179,29 +359,25 @@ fn run_setup() {
                 }
             }
 
-            // Also check any mods already inside %APPDATA%\VivaldiModManager\user_mods
             if let Ok(rescan_count) = config.rescan_mods() {
                 imported += rescan_count;
             }
 
             println!("✓ Auto-imported/registered {} mods into configuration", imported);
 
-            // Save config
             if let Err(e) = config.save() {
                 eprintln!("Failed to save config: {}", e);
             } else {
                 println!("✓ Saved config to: {}", ModConfig::get_config_path().display());
             }
 
-            // Perform initial patch & bundle
             match ensure_patched_and_bundled(&mut config, &target) {
                 Ok(_) => println!("✓ Initial JIT patch & bundle compiled successfully!"),
                 Err(e) => eprintln!("Initial patch warning: {}", e),
             }
         }
         Err(e) => {
-            eprintln!("Vivaldi not automatically detected: {}", e);
-            eprintln!("You can set your Vivaldi path manually in: {}", ModConfig::get_config_path().display());
+            eprintln!("Error resolving target Vivaldi files: {}", e);
         }
     }
 
@@ -213,7 +389,8 @@ fn run_setup() {
 
 fn run_status(as_json: bool) {
     let config = ModConfig::load().unwrap_or_default();
-    let hook_status = os_hook::get_hook_status();
+    let exe_name = &config.exe_name;
+    let hook_status = os_hook::get_hook_status(exe_name);
     let target_result = discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new));
 
     let (vivaldi_found, vivaldi_exe, version, patched) = match &target_result {
@@ -235,8 +412,13 @@ fn run_status(as_json: bool) {
         };
 
         let json = serde_json::json!({
+            "storage": {
+                "mode": if ModConfig::is_portable() { "portable" } else { "standard" },
+                "app_dir": ModConfig::get_app_dir().to_string_lossy()
+            },
             "hook": {
                 "active": hook_active,
+                "target_image": exe_name,
                 "debugger_path": debugger_path,
                 "matches_interceptor": matches_self
             },
@@ -246,28 +428,38 @@ fn run_status(as_json: bool) {
                 "version": version,
                 "patched": patched
             },
+            "settings": {
+                "ui_ready_selector": config.ui_ready_selector,
+                "init_delay_ms": config.init_delay_ms,
+                "detach_timeout_ms": config.detach_timeout_ms,
+                "exe_name": config.exe_name
+            },
             "mods": {
                 "total": total_mods,
                 "enabled_css": enabled_css,
                 "enabled_js": enabled_js
-            },
-            "app_dir": ModConfig::get_app_dir().to_string_lossy()
+            }
         });
         println!("{}", serde_json::to_string_pretty(&json).unwrap());
     } else {
         println!("=== Vivaldi JIT Mod Interceptor: Status ===");
-        println!("Configuration Directory: {}", ModConfig::get_app_dir().display());
+        let mode_desc = if ModConfig::is_portable() {
+            "Portable Mode"
+        } else {
+            "Standard Mode (%APPDATA%)"
+        };
+        println!("Storage: [{}] {}", mode_desc, ModConfig::get_app_dir().display());
 
         match &hook_status {
             HookStatus::Installed { debugger_path, matches_current_exe } => {
                 if *matches_current_exe {
-                    println!("IFEO Hook: [ACTIVE] Correctly routes vivaldi.exe through this interceptor.");
+                    println!("IFEO Hook ({}): [ACTIVE] Correctly routes through this interceptor.", exe_name);
                 } else {
-                    println!("IFEO Hook: [WARNING] Installed but points to another debugger: {}", debugger_path);
+                    println!("IFEO Hook ({}): [WARNING] Installed but points to another debugger: {}", exe_name, debugger_path);
                 }
             }
             HookStatus::NotInstalled => {
-                println!("IFEO Hook: [INACTIVE] (Run 'interceptor install-hook' to enable)");
+                println!("IFEO Hook ({}): [INACTIVE] (Run 'interceptor install-hook' to enable)", exe_name);
             }
         }
 
@@ -279,6 +471,7 @@ fn run_status(as_json: bool) {
             println!("Vivaldi Executable: Not found");
         }
 
+        println!("Config: Selector '{}', Delay {}ms, Detach Timeout {}ms", config.ui_ready_selector, config.init_delay_ms, config.detach_timeout_ms);
         println!("Mods Summary: {} total ({} CSS active, {} JS active)", total_mods, enabled_css, enabled_js);
     }
 }
@@ -298,14 +491,15 @@ fn run_list_mods(as_json: bool) {
             return;
         }
 
-        println!("{:<4} {:<6} {:<40} {}", "No.", "Type", "Name", "Status");
-        println!("{:-<4} {:-<6} {:-<40} {:-<8}", "", "", "", "");
+        println!("{:<4} {:<6} {:<6} {:<40} {}", "No.", "Order", "Type", "Name", "Status");
+        println!("{:-<4} {:-<6} {:-<6} {:-<40} {:-<8}", "", "", "", "", "");
 
         for (idx, mod_item) in config.mods.iter().enumerate() {
             let status = if mod_item.enabled { "Enabled" } else { "Disabled" };
             println!(
-                "{:<4} {:<6} {:<40} [{}]",
+                "{:<4} {:<6} {:<6} {:<40} [{}]",
                 idx + 1,
+                mod_item.order,
                 mod_item.mod_type.as_str().to_uppercase(),
                 mod_item.name,
                 status
@@ -328,7 +522,6 @@ fn run_toggle(mod_name: &str) {
             let state_str = if new_state { "ENABLED" } else { "DISABLED" };
             println!("✓ Mod '{}' is now {}.", mod_name, state_str);
 
-            // Recompile bundle if Vivaldi can be discovered
             if let Ok(target) = discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new)) {
                 let _ = bundler::compile_bundle(&config, &target.resources_dir);
                 println!("✓ Recompiled bundle for active version {}", target.version);
@@ -401,10 +594,23 @@ fn run_unpatch_command() {
     }
 }
 
-fn run_install_hook() {
-    match os_hook::install_hook() {
+fn run_install_hook(path_arg: Option<&str>, target_arg: Option<&str>) {
+    let mut config = ModConfig::load().unwrap_or_default();
+
+    // Select/confirm Vivaldi path first in current user console
+    if !os_hook::is_elevated() || path_arg.is_some() || config.vivaldi_path.is_none() {
+        if let Ok(chosen) = select_or_confirm_vivaldi_path(path_arg, false, &mut config) {
+            println!("Using Vivaldi path: {}", chosen.display());
+        }
+    }
+
+    let exe_name = target_arg
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| config.exe_name.clone());
+
+    match os_hook::install_hook(&exe_name) {
         Ok(exe) => {
-            println!("✓ Successfully installed IFEO launch interceptor hook in Windows Registry!");
+            println!("✓ Successfully installed IFEO launch interceptor hook for '{}' in Windows Registry!", exe_name);
             println!("Debugger path: {}", exe.display());
             println!("Vivaldi will now automatically launch through this interceptor.");
         }
@@ -412,9 +618,14 @@ fn run_install_hook() {
     }
 }
 
-fn run_uninstall_hook() {
-    match os_hook::uninstall_hook() {
-        Ok(_) => println!("✓ Successfully removed IFEO launch interceptor hook from Windows Registry."),
+fn run_uninstall_hook(target_arg: Option<&str>) {
+    let config = ModConfig::load().unwrap_or_default();
+    let exe_name = target_arg
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| config.exe_name.clone());
+
+    match os_hook::uninstall_hook(&exe_name) {
+        Ok(_) => println!("✓ Successfully removed IFEO launch interceptor hook for '{}' from Windows Registry.", exe_name),
         Err(e) => eprintln!("Failed to uninstall IFEO hook: {}", e),
     }
 }
@@ -424,20 +635,29 @@ fn print_help() {
 r#"Vivaldi JIT Mod Interceptor - Automatic CSS/JS Mod Loader
 
 USAGE:
-    interceptor [SUBCOMMAND]
+    interceptor [SUBCOMMAND] [OPTIONS]
     interceptor [VIVALDI_ARGUMENTS...]
 
 SUBCOMMANDS:
     launch [ARGS...]      JIT-checks Vivaldi, applies mods if needed, and launches
-    setup                 Initial setup: creates directories and auto-imports existing mods
-    status [--json]       Display hook status, Vivaldi installation info, and mod stats
-    list-mods [--json]    List all registered mods and their enabled/disabled states
+    setup [OPTIONS]       Initial setup: interactive path selection and mod auto-import
+                          Options:
+                            --portable           Enable portable mode in executable directory
+                            --path <PATH>        Specify vivaldi.exe or parent directory directly
+                            --select-path        Force interactive selection menu
+    status [--json]       Display hook status, storage mode, Vivaldi installation info, and mod stats
+    list-mods [--json]    List all registered mods, load order, and their enabled/disabled states
     toggle <MOD_NAME>     Toggle a mod between enabled and disabled
     import <FILE_PATH>    Import a new .css or .js mod file into the manager
     patch                 Manually compile bundles and patch window.html
     unpatch               Restore pristine window.html without mod hooks
-    install-hook          Register IFEO debugger hook (elevates via UAC if needed)
-    uninstall-hook        Remove IFEO debugger hook (elevates via UAC if needed)
+    install-hook [OPTS]   Register IFEO debugger hook (elevates via UAC if needed)
+                          Options:
+                            --path <PATH>        Specify target vivaldi.exe or directory
+                            --target <EXE_NAME>  Specify target exe name (default: vivaldi.exe)
+    uninstall-hook [OPTS] Remove IFEO debugger hook (elevates via UAC if needed)
+                          Options:
+                            --target <EXE_NAME>  Specify target exe name (default: vivaldi.exe)
     help                  Print this help message
 "#);
 }

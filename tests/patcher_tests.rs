@@ -109,15 +109,18 @@ fn test_config_serialization_and_toggle() {
                 name: "CustomTheme.css".to_string(),
                 mod_type: ModType::Css,
                 enabled: true,
+                order: 10,
                 description: "Test theme".to_string(),
             },
             ModItem {
                 name: "CustomNav.js".to_string(),
                 mod_type: ModType::Js,
                 enabled: false,
+                order: 5,
                 description: "Test nav".to_string(),
             },
         ],
+        ..ModConfig::default()
     };
 
     let json = serde_json::to_string_pretty(&config).unwrap();
@@ -125,7 +128,9 @@ fn test_config_serialization_and_toggle() {
     assert_eq!(deserialized.version, 1);
     assert_eq!(deserialized.mods.len(), 2);
     assert!(deserialized.mods[0].enabled);
+    assert_eq!(deserialized.mods[0].order, 10);
     assert!(!deserialized.mods[1].enabled);
+    assert_eq!(deserialized.ui_ready_selector, "#browser");
 
     // Toggle mod in memory
     let found = config.mods.iter_mut().find(|m| m.name == "CustomTheme.css").unwrap();
@@ -150,6 +155,7 @@ fn test_bundler_compilation() {
         vivaldi_path: None,
         auto_patch: true,
         mods: Vec::new(),
+        ..ModConfig::default()
     };
 
     let test_app_dir = temp_dir.join("app_data");

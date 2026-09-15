@@ -15,9 +15,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 const SECURITY_BUILTIN_DOMAIN_RID: u32 = 0x00000020;
 const DOMAIN_ALIAS_RID_ADMINS: u32 = 0x00000220;
 
-const IFEO_KEY_PATH: &str =
-    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\vivaldi.exe";
-
 #[derive(Debug, Clone)]
 pub enum HookStatus {
     NotInstalled,
@@ -58,13 +55,13 @@ pub fn is_elevated() -> bool {
     }
 }
 
-pub fn relaunch_as_admin(command_name: &str) -> Result<(), String> {
+pub fn relaunch_as_admin(command_args: &str) -> Result<(), String> {
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Failed to get current executable path: {}", e))?;
 
     let exe_wide = encode_wide(&current_exe.to_string_lossy());
     let verb_wide = encode_wide("runas");
-    let args_wide = encode_wide(command_name);
+    let args_wide = encode_wide(command_args);
 
     unsafe {
         let mut sei: SHELLEXECUTEINFOW = std::mem::zeroed();
@@ -90,9 +87,17 @@ pub fn relaunch_as_admin(command_name: &str) -> Result<(), String> {
     }
 }
 
-pub fn get_hook_status() -> HookStatus {
+pub fn get_ifeo_key_path(exe_name: &str) -> String {
+    format!(
+        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\{}",
+        exe_name
+    )
+}
+
+pub fn get_hook_status(exe_name: &str) -> HookStatus {
     unsafe {
-        let key_wide = encode_wide(IFEO_KEY_PATH);
+        let key_str = get_ifeo_key_path(exe_name);
+        let key_wide = encode_wide(&key_str);
         let mut hkey: HKEY = std::mem::zeroed();
 
         if RegOpenKeyExW(HKEY_LOCAL_MACHINE, key_wide.as_ptr(), 0, KEY_READ, &mut hkey)
@@ -138,10 +143,10 @@ pub fn get_hook_status() -> HookStatus {
     }
 }
 
-pub fn install_hook() -> Result<PathBuf, String> {
+pub fn install_hook(exe_name: &str) -> Result<PathBuf, String> {
     if !is_elevated() {
         println!("Requesting Administrator elevation for IFEO registry setup...");
-        relaunch_as_admin("install-hook")?;
+        relaunch_as_admin(&format!("install-hook --target \"{}\"", exe_name))?;
         return Ok(std::env::current_exe().unwrap_or_default());
     }
 
@@ -152,7 +157,8 @@ pub fn install_hook() -> Result<PathBuf, String> {
     let debugger_wide = encode_wide(&debugger_cmd);
 
     unsafe {
-        let key_wide = encode_wide(IFEO_KEY_PATH);
+        let key_str = get_ifeo_key_path(exe_name);
+        let key_wide = encode_wide(&key_str);
         let mut hkey: HKEY = std::mem::zeroed();
         let mut disposition: u32 = 0;
 
@@ -194,15 +200,16 @@ pub fn install_hook() -> Result<PathBuf, String> {
     }
 }
 
-pub fn uninstall_hook() -> Result<(), String> {
+pub fn uninstall_hook(exe_name: &str) -> Result<(), String> {
     if !is_elevated() {
         println!("Requesting Administrator elevation to remove IFEO registry hook...");
-        relaunch_as_admin("uninstall-hook")?;
+        relaunch_as_admin(&format!("uninstall-hook --target \"{}\"", exe_name))?;
         return Ok(());
     }
 
     unsafe {
-        let key_wide = encode_wide(IFEO_KEY_PATH);
+        let key_str = get_ifeo_key_path(exe_name);
+        let key_wide = encode_wide(&key_str);
         let mut hkey: HKEY = std::mem::zeroed();
 
         let open_res = RegOpenKeyExW(HKEY_LOCAL_MACHINE, key_wide.as_ptr(), 0, KEY_WRITE, &mut hkey);

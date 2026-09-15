@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
@@ -17,6 +18,14 @@ pub struct VivaldiTarget {
     pub window_html: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredInstallation {
+    pub exe_path: PathBuf,
+    pub app_dir: PathBuf,
+    pub version: String,
+    pub is_snapshot: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct VersionParts(Vec<u64>);
 
@@ -34,13 +43,27 @@ pub fn resolve_vivaldi(override_hint: Option<&Path>) -> Result<VivaldiTarget, St
     let exe_path = if let Some(hint) = override_hint {
         if hint.is_file() {
             hint.to_path_buf()
-        } else if hint.is_dir() && hint.join("vivaldi.exe").exists() {
-            hint.join("vivaldi.exe")
+        } else if hint.is_dir() {
+            if hint.join("vivaldi.exe").is_file() {
+                hint.join("vivaldi.exe")
+            } else if hint.join("vivaldi_snapshot.exe").is_file() {
+                hint.join("vivaldi_snapshot.exe")
+            } else {
+                return Err(format!(
+                    "Directory does not contain vivaldi.exe: {}",
+                    hint.display()
+                ));
+            }
         } else {
-            find_vivaldi_exe()?
+            return Err(format!("Specified path does not exist: {}", hint.display()));
         }
     } else {
-        find_vivaldi_exe()?
+        let discovered = discover_all_installations();
+        if let Some(first) = discovered.first() {
+            first.exe_path.clone()
+        } else {
+            return Err("Could not locate Vivaldi executable. Please specify path via config or arguments.".to_string());
+        }
     };
 
     let raw_canonical = exe_path
@@ -68,49 +91,88 @@ pub fn resolve_vivaldi(override_hint: Option<&Path>) -> Result<VivaldiTarget, St
     })
 }
 
-fn find_vivaldi_exe() -> Result<PathBuf, String> {
-    // 1. Check registry HKCU then HKLM
-    if let Some(path) = query_app_paths_registry(HKEY_CURRENT_USER) {
-        if path.is_file() {
-            return Ok(path);
+pub fn discover_all_installations() -> Vec<DiscoveredInstallation> {
+    let mut results = Vec::new();
+    let mut seen_canonical = HashSet::new();
+    let mut candidate_paths = Vec::new();
+
+    // 1. Check registry HKCU and HKLM for vivaldi.exe and snapshot
+    for exe_name in ["vivaldi.exe", "vivaldi_snapshot.exe"] {
+        if let Some(path) = query_app_paths_registry(HKEY_CURRENT_USER, exe_name) {
+            candidate_paths.push(path);
         }
-    }
-    if let Some(path) = query_app_paths_registry(HKEY_LOCAL_MACHINE) {
-        if path.is_file() {
-            return Ok(path);
+        if let Some(path) = query_app_paths_registry(HKEY_LOCAL_MACHINE, exe_name) {
+            candidate_paths.push(path);
         }
     }
 
-    // 2. Common known installation paths
-    let mut candidates = Vec::new();
-
+    // 2. Common known installation paths in %LOCALAPPDATA% and Program Files
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(local_app_data).join("Vivaldi").join("Application").join("vivaldi.exe"));
+        let base = PathBuf::from(local_app_data);
+        candidate_paths.push(base.join("Vivaldi").join("Application").join("vivaldi.exe"));
+        candidate_paths.push(base.join("Vivaldi Snapshot").join("Application").join("vivaldi.exe"));
     }
     if let Ok(prog_files) = std::env::var("ProgramFiles") {
-        candidates.push(PathBuf::from(prog_files).join("Vivaldi").join("Application").join("vivaldi.exe"));
+        let base = PathBuf::from(prog_files);
+        candidate_paths.push(base.join("Vivaldi").join("Application").join("vivaldi.exe"));
+        candidate_paths.push(base.join("Vivaldi Snapshot").join("Application").join("vivaldi.exe"));
     }
     if let Ok(prog_files_x86) = std::env::var("ProgramFiles(x86)") {
-        candidates.push(PathBuf::from(prog_files_x86).join("Vivaldi").join("Application").join("vivaldi.exe"));
+        let base = PathBuf::from(prog_files_x86);
+        candidate_paths.push(base.join("Vivaldi").join("Application").join("vivaldi.exe"));
+        candidate_paths.push(base.join("Vivaldi Snapshot").join("Application").join("vivaldi.exe"));
     }
 
-    // Check drives like M:\, D:\, etc.
-    for drive in ["M", "D", "E", "C"] {
-        candidates.push(PathBuf::from(format!(r"{}:\Vivaldi\Application\vivaldi.exe", drive)));
+    // 3. Dynamic Windows logical drive letters (scans all mounted drives A-Z)
+    let drives = get_logical_drive_letters();
+    for drive in drives {
+        candidate_paths.push(PathBuf::from(format!(r"{}:\Vivaldi\Application\vivaldi.exe", drive)));
+        candidate_paths.push(PathBuf::from(format!(r"{}:\Vivaldi Snapshot\Application\vivaldi.exe", drive)));
+        candidate_paths.push(PathBuf::from(format!(r"{}:\PortableApps\Vivaldi\Application\vivaldi.exe", drive)));
+        candidate_paths.push(PathBuf::from(format!(r"{}:\Program Files\Vivaldi\Application\vivaldi.exe", drive)));
     }
 
-    for candidate in candidates {
+    for candidate in candidate_paths {
         if candidate.is_file() {
-            return Ok(candidate);
+            let clean = strip_unc_prefix(&candidate.canonicalize().unwrap_or_else(|_| candidate.clone()));
+            if seen_canonical.insert(clean.clone()) {
+                if let Some(parent) = clean.parent() {
+                    let app_dir = parent.to_path_buf();
+                    if let Ok((version, _, _)) = find_active_version_dir(&app_dir) {
+                        let is_snapshot = clean.to_string_lossy().to_ascii_lowercase().contains("snapshot");
+                        results.push(DiscoveredInstallation {
+                            exe_path: clean,
+                            app_dir,
+                            version,
+                            is_snapshot,
+                        });
+                    }
+                }
+            }
         }
     }
 
-    Err("Could not locate Vivaldi executable. Please specify path via config or arguments.".to_string())
+    results
 }
 
-fn query_app_paths_registry(root: HKEY) -> Option<PathBuf> {
+fn get_logical_drive_letters() -> Vec<char> {
+    extern "system" {
+        fn GetLogicalDrives() -> u32;
+    }
+    let mask = unsafe { GetLogicalDrives() };
+    let mut letters = Vec::new();
+    for i in 0..26 {
+        if (mask & (1 << i)) != 0 {
+            letters.push((b'A' + i as u8) as char);
+        }
+    }
+    letters
+}
+
+fn query_app_paths_registry(root: HKEY, exe_name: &str) -> Option<PathBuf> {
     unsafe {
-        let subkey = encode_wide(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\vivaldi.exe");
+        let subkey_str = format!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{}", exe_name);
+        let subkey = encode_wide(&subkey_str);
         let mut hkey: HKEY = std::mem::zeroed();
 
         if RegOpenKeyExW(root, subkey.as_ptr(), 0, KEY_READ, &mut hkey) != ERROR_SUCCESS {
