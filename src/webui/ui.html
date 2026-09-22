@@ -236,14 +236,37 @@
     .mod-row:hover { border-color: rgba(108,99,255,0.3); background: var(--bg4); }
     .mod-row.disabled { opacity: 0.5; }
 
-    .mod-order {
-      width: 36px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      color: var(--text3);
-      text-align: right;
+    /* drag handle */
+    .drag-handle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
       flex-shrink: 0;
+      cursor: grab;
+      color: var(--text3);
+      font-size: 1rem;
+      opacity: 0.4;
+      transition: opacity 0.15s;
+      user-select: none;
+      line-height: 1;
     }
+    .mod-row:hover .drag-handle { opacity: 1; }
+    .drag-handle:active { cursor: grabbing; }
+
+    /* position number badge */
+    .mod-pos {
+      width: 28px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--text3);
+      text-align: center;
+      flex-shrink: 0;
+      background: var(--bg4);
+      border-radius: 4px;
+      padding: 2px 0;
+    }
+
     .mod-type-badge {
       width: 34px;
       height: 22px;
@@ -266,20 +289,27 @@
       white-space: nowrap;
     }
 
-    .mod-order-input {
-      width: 56px;
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 4px 8px;
-      color: var(--text);
-      font-size: 0.8rem;
-      font-family: 'JetBrains Mono', monospace;
-      text-align: center;
-      outline: none;
-      transition: border-color 0.15s;
+    /* DnD visual states */
+    .mod-row.dragging {
+      opacity: 0.35;
+      border-style: dashed;
+      border-color: var(--accent);
     }
-    .mod-order-input:focus { border-color: var(--accent); }
+    .mod-row.drag-over-top    { border-top:    2px solid var(--accent2); }
+    .mod-row.drag-over-bottom { border-bottom: 2px solid var(--accent2); }
+
+    /* notice shown when DnD is unavailable */
+    .dnd-notice {
+      font-size: 0.78rem;
+      color: var(--amber);
+      background: rgba(251,191,36,0.08);
+      border: 1px solid rgba(251,191,36,0.2);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      margin-bottom: 10px;
+      display: none;
+    }
+    .dnd-notice.visible { display: block; }
 
     /* ── TOGGLE SWITCH ── */
     .toggle {
@@ -628,6 +658,7 @@
           <button class="filter-btn" data-filter="disabled">Disabled</button>
           <button class="btn btn-secondary" id="rescan-mods-btn" style="margin-left:auto;">🔄 Rescan</button>
         </div>
+        <div class="dnd-notice" id="dnd-notice">⚠ Drag-and-drop reordering is disabled while a search or filter is active. Clear the search and set filter to <strong>All</strong> to rearrange.</div>
         <div id="mods-list">
           <div class="empty-state"><div class="es-icon">🎭</div><p>Loading mods…</p></div>
         </div>
@@ -897,14 +928,29 @@ async function loadMods(rescan = false) {
   }
 }
 
+// ── Drag-and-drop state ──
+let dragSrcIndex = null; // index into the *current filtered* array
+
+function isDndActive() {
+  return searchQuery === '' && currentFilter === 'all';
+}
+
+function updateDndNotice() {
+  const notice = document.getElementById('dnd-notice');
+  if (notice) notice.classList.toggle('visible', !isDndActive());
+}
+
 function renderMods() {
+  updateDndNotice();
   const list = document.getElementById('mods-list');
+  const dndEnabled = isDndActive();
+
   let filtered = modsData.filter(m => {
     const matchSearch = m.name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchFilter =
-      currentFilter === 'all' ? true :
-      currentFilter === 'css' ? m.mod_type === 'css' :
-      currentFilter === 'js'  ? m.mod_type === 'js'  :
+      currentFilter === 'all'      ? true :
+      currentFilter === 'css'      ? m.mod_type === 'css' :
+      currentFilter === 'js'       ? m.mod_type === 'js'  :
       currentFilter === 'enabled'  ? m.enabled :
       currentFilter === 'disabled' ? !m.enabled : true;
     return matchSearch && matchFilter;
@@ -915,19 +961,19 @@ function renderMods() {
     return;
   }
 
-  list.innerHTML = filtered.map(m => `
-    <div class="mod-row ${m.enabled ? '' : 'disabled'}" data-name="${escHtml(m.name)}">
-      <div class="mod-order">#${m.order}</div>
+  list.innerHTML = filtered.map((m, i) => `
+    <div
+      class="mod-row ${m.enabled ? '' : 'disabled'}"
+      data-name="${escHtml(m.name)}"
+      data-index="${i}"
+      ${dndEnabled ? 'draggable="true"' : ''}
+    >
+      <div class="drag-handle" title="${dndEnabled ? 'Drag to reorder' : 'Clear search/filter to reorder'}">
+        ${dndEnabled ? '⣿' : '○'}
+      </div>
+      <div class="mod-pos">${i + 1}</div>
       <div class="mod-type-badge ${m.mod_type}">${m.mod_type.toUpperCase()}</div>
       <div class="mod-name" title="${escHtml(m.name)}">${escHtml(m.name)}</div>
-      <input
-        class="mod-order-input"
-        type="number"
-        value="${m.order}"
-        min="-999" max="9999"
-        title="Load order (lower = earlier)"
-        data-name="${escHtml(m.name)}"
-      />
       <label class="toggle" title="${m.enabled ? 'Click to disable' : 'Click to enable'}">
         <input type="checkbox" ${m.enabled ? 'checked' : ''} data-name="${escHtml(m.name)}" class="mod-toggle-input" />
         <span class="toggle-track"></span>
@@ -935,7 +981,7 @@ function renderMods() {
     </div>
   `).join('');
 
-  // Toggle handlers
+  // ── Toggle handlers ──
   list.querySelectorAll('.mod-toggle-input').forEach(input => {
     input.addEventListener('change', async () => {
       const name = input.dataset.name;
@@ -946,40 +992,90 @@ function renderMods() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name })
         });
-        // Update local state
         const mod = modsData.find(m => m.name === name);
         if (mod) mod.enabled = res.enabled;
         renderMods();
         toast(`${name} is now ${res.enabled ? 'enabled' : 'disabled'}.`, 'success');
       } catch (e) {
         toast('Toggle failed: ' + e.message, 'error');
-        input.checked = !input.checked; // revert
+        input.checked = !input.checked;
       } finally { hideLoading(); }
     });
   });
 
-  // Order change handlers (debounced)
-  list.querySelectorAll('.mod-order-input').forEach(input => {
-    let timer;
-    input.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        const name = input.dataset.name;
-        const order = parseInt(input.value, 10);
-        if (isNaN(order)) return;
-        try {
-          await api('/api/set-order', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, order })
-          });
-          const mod = modsData.find(m => m.name === name);
-          if (mod) { mod.order = order; modsData.sort((a,b) => a.order - b.order || a.name.localeCompare(b.name)); }
-          toast(`Order for ${name} updated.`, 'success');
-        } catch (e) {
-          toast('Failed to update order: ' + e.message, 'error');
-        }
-      }, 500);
+  // ── Drag-and-drop handlers ──
+  if (!dndEnabled) return;
+
+  list.querySelectorAll('.mod-row[draggable]').forEach(row => {
+    row.addEventListener('dragstart', e => {
+      dragSrcIndex = parseInt(row.dataset.index, 10);
+      row.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(dragSrcIndex));
+    });
+
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      list.querySelectorAll('.mod-row').forEach(r => {
+        r.classList.remove('drag-over-top', 'drag-over-bottom');
+      });
+    });
+
+    row.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = row.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      list.querySelectorAll('.mod-row').forEach(r => r.classList.remove('drag-over-top', 'drag-over-bottom'));
+      row.classList.add(e.clientY < mid ? 'drag-over-top' : 'drag-over-bottom');
+    });
+
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('drag-over-top', 'drag-over-bottom');
+    });
+
+    row.addEventListener('drop', async e => {
+      e.preventDefault();
+      row.classList.remove('drag-over-top', 'drag-over-bottom');
+      const destIndex = parseInt(row.dataset.index, 10);
+      if (dragSrcIndex === null || dragSrcIndex === destIndex) return;
+
+      // Determine if drop is above or below midpoint
+      const rect = row.getBoundingClientRect();
+      const insertAfter = e.clientY >= rect.top + rect.height / 2;
+
+      // Reorder modsData in-place.
+      // After splicing src out, indices at or after src shift down by 1.
+      const reordered = [...modsData];
+      const [moved] = reordered.splice(dragSrcIndex, 1);
+      // dest index in the post-splice array
+      let insertAt;
+      if (dragSrcIndex < destIndex) {
+        // Dragging downward: dest shifts down by 1 after splice
+        insertAt = insertAfter ? destIndex : destIndex - 1;
+      } else {
+        // Dragging upward: dest is unaffected by splice
+        insertAt = insertAfter ? destIndex + 1 : destIndex;
+      }
+      reordered.splice(insertAt, 0, moved);
+
+      // Optimistic update
+      modsData = reordered;
+      renderMods();
+
+      // Send to server — one call with the full new order
+      try {
+        await api('/api/reorder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ names: reordered.map(m => m.name) })
+        });
+        toast('Load order saved.', 'success');
+      } catch (err) {
+        toast('Failed to save order: ' + err.message, 'error');
+        await loadMods(); // revert to server state
+      }
+      dragSrcIndex = null;
     });
   });
 }

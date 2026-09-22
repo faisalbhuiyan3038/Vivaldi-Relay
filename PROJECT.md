@@ -115,6 +115,22 @@ The interceptor resolves this by generating local bundle files directly within `
 
 ---
 
+### 2.5 Embedded Web Management Interface & Dynamic Reordering
+
+To provide a modern, GUI-driven alternative to terminal commands without introducing persistent background daemon overhead:
+- **Embedded Lightweight Server**: The interceptor embeds `tiny_http`, launching a local HTTP server on `127.0.0.1:<port>` (default `7979`) on demand via `interceptor webui` or standalone `webui.exe`.
+- **Zero External Dependencies**: The entire frontend SPA is defined in `src/webui/ui.html` and baked directly into the binary at compile time via `include_str!`. It executes without node, external CDNs, or network connectivity.
+- **RESTful Control API**: Exposes 13 REST API endpoints handling real-time status queries, live configuration editing, mod enabling/disabling, multipart file uploads for drag-and-drop mod importing, manual patch/unpatch cycles, IFEO hook installation, and graceful shutdown.
+- **Visual Drag-and-Drop Reordering**:
+  - Replaces manual integer ordering inputs with native HTML5 drag-and-drop handles (`⣿`).
+  - Visual insertion guides (blue top/bottom drop border indicators) provide instant placement feedback.
+  - Client state optimistically reorders on drop, rolling back if server synchronization fails.
+  - The `POST /api/reorder` endpoint accepts the full ordered array of mod names `{"names": [...]}`.
+  - The server updates each mod's `order` field (`0, 1, 2, ...`), canonicalizes sort order, atomically commits `mods_config.json`, and triggers automatic JIT bundle recompilation via `bundler::compile_bundle`.
+  - To prevent corrupting global order with filtered sub-lists, drag handles automatically switch to inactive indicators (`○`) and drag events are disabled whenever search or type filters are active.
+
+---
+
 ## 3. Directory Layout & Storage Modes
 
 The interceptor supports two storage modes: **Standard Mode** (default) and **Portable Mode**.
@@ -167,7 +183,8 @@ If `portable.lock`, `mods_config.json`, or a `user_mods/` folder exists directly
 | **`config.rs`** | `src/config.rs` | Schema serialization (`ModConfig`, `ModItem`), portable mode detection (`is_portable`), JSON persistence, mod toggling. |
 | **`os_hook.rs`** | `src/os_hook.rs` | Reads/writes IFEO `Debugger` key in `HKLM` for custom target exe names, automatic UAC elevation via `ShellExecuteExW("runas")`. |
 | **`lib.rs`** | `src/lib.rs` | Shared library crate root — re-exports all modules so both the `interceptor` and `webui` binaries can share them without code duplication. |
-| **`webui/mod.rs`** | `src/webui/mod.rs` | Embedded `tiny_http` HTTP server. Serves a self-contained SPA (`ui.html` baked in via `include_str!`). Routes 12 REST API endpoints to lib functions. |
+| **`webui/mod.rs`** | `src/webui/mod.rs` | Embedded `tiny_http` HTTP server. Serves a self-contained SPA (`ui.html` baked in via `include_str!`). Routes 13 REST API endpoints to lib functions (including bulk mod reordering, toggling, live config editing, import, patch, hook management). |
+| **`webui/ui.html`** | `src/webui/ui.html` | Self-contained single-page web UI (dark glassmorphism theme). Real-time status dashboard, drag-and-drop mod reordering with placement guides, drag-and-drop file import, mod toggling, live config editor, and safe shutdown. |
 | **`webui/main.rs`** | `src/webui/main.rs` | Entry point for the standalone `webui.exe` binary. Parses `--port` / `--open` flags. |
 
 ---
@@ -246,6 +263,17 @@ Whenever modifications are made to this codebase, developers/agents must adhere 
 ---
 
 ## 8. Change Log
+
+### [v0.1.6] - 2026-09-22
+
+**Feature: Drag-and-Drop Mod Reordering in WebUI & API Expansion**
+
+- **Feature (WebUI)**: Added native HTML5 drag-and-drop mod reordering to `src/webui/ui.html`. Replaced manual numeric input fields with grip handles (`⣿`).
+- **Feature (WebUI)**: Added visual drop target guides (blue top/bottom insertion borders) indicating exact placement destination.
+- **Feature (WebUI)**: Implemented optimistic client-side reordering for instantaneous feedback, with automatic rollback to server state if the request fails.
+- **Feature (WebUI)**: Filter & search safety guard: drag handles convert to inactive indicators (`○`) and dragging is inhibited while search query or type filters are active, preventing partial list corruption.
+- **Feature (API)**: Added `POST /api/reorder` endpoint in `src/webui/mod.rs` accepting a full sequence of mod names (`{"names": [...]}`). Automatically reassigns sequential 0-indexed `order` values, sorts config canonical list, saves `mods_config.json`, and recompiles bundles JIT.
+- **Version**: Bumped package version in `Cargo.toml` to `0.1.6` to match release versioning and synchronize `env!("CARGO_PKG_VERSION")`.
 
 ### [v0.1.5] - 2026-09-22
 

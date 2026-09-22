@@ -154,6 +154,10 @@ fn route(
             let (s, b) = api_set_order(body_str);
             (s, b, false, false)
         }
+        (Method::Post, "/api/reorder") => {
+            let (s, b) = api_reorder(body_str);
+            (s, b, false, false)
+        }
         (Method::Post, "/api/import") => {
             let (s, b) = api_import(body_bytes, content_type);
             (s, b, false, false)
@@ -339,6 +343,48 @@ fn api_set_order(body: &str) -> (u16, String) {
         let _ = bundler::compile_bundle(&config, &target.resources_dir);
     }
     let json = serde_json::json!({ "name": name, "order": order, "message": "Order updated and bundle recompiled." });
+    (200, serde_json::to_string(&json).unwrap_or_default())
+}
+
+/// Accepts {"names": ["mod1.css", "mod2.js", ...]} — the full desired order.
+/// Assigns order = 0, 1, 2, … based on position, saves, and recompiles.
+fn api_reorder(body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return err_json(400, "Invalid JSON body"),
+    };
+    let names: Vec<String> = match v["names"].as_array() {
+        Some(arr) => arr.iter().filter_map(|n| n.as_str().map(|s| s.to_string())).collect(),
+        None => return err_json(400, "Missing or invalid 'names' array"),
+    };
+    if names.is_empty() {
+        return err_json(400, "'names' array must not be empty");
+    }
+
+    let mut config = match ModConfig::load_or_require_setup() {
+        Ok(c) => c,
+        Err(e) => return err_json(400, &e),
+    };
+
+    // Assign order values by position in the names list
+    for (new_order, name) in names.iter().enumerate() {
+        if let Some(m) = config.mods.iter_mut().find(|m| m.name.eq_ignore_ascii_case(name)) {
+            m.order = new_order as i32;
+        }
+    }
+    // Keep canonical sort consistent with new orders
+    config.mods.sort_by(|a, b| {
+        a.order.cmp(&b.order).then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+    });
+
+    if let Err(e) = config.save() {
+        return err_json(500, &e);
+    }
+    if let Ok(target) = discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new)) {
+        let _ = bundler::compile_bundle(&config, &target.resources_dir);
+    }
+
+    let json = serde_json::json!({ "message": format!("Reordered {} mods and recompiled bundle.", names.len()) });
     (200, serde_json::to_string(&json).unwrap_or_default())
 }
 
