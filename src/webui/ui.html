@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vivaldi Mod Manager</title>
+  <meta name="description" content="Local web interface for Vivaldi JIT Mod Interceptor — manage mods, config, and hooks." />
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    :root {
+      --bg:        #0d0f14;
+      --bg2:       #13161f;
+      --bg3:       #1a1e2a;
+      --bg4:       #222736;
+      --border:    rgba(255,255,255,0.07);
+      --accent:    #6c63ff;
+      --accent2:   #a78bfa;
+      --green:     #34d399;
+      --red:       #f87171;
+      --amber:     #fbbf24;
+      --text:      #e2e8f0;
+      --text2:     #94a3b8;
+      --text3:     #64748b;
+      --radius:    12px;
+      --radius-sm: 8px;
+      --shadow:    0 4px 24px rgba(0,0,0,0.4);
+      --glow:      0 0 20px rgba(108,99,255,0.15);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { font-size: 15px; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── SCROLLBAR ── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 999px; }
+
+    /* ── LAYOUT ── */
+    .layout { display: flex; min-height: 100vh; }
+
+    /* ── SIDEBAR ── */
+    .sidebar {
+      width: 220px;
+      flex-shrink: 0;
+      background: var(--bg2);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 24px 0 16px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .sidebar-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 20px 28px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    .sidebar-logo .icon {
+      width: 34px; height: 34px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+      box-shadow: 0 0 12px rgba(108,99,255,0.35);
+    }
+    .sidebar-logo .name { font-size: 0.85rem; font-weight: 600; line-height: 1.3; }
+    .sidebar-logo .sub { font-size: 0.7rem; color: var(--text3); font-weight: 400; }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      margin: 1px 8px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text2);
+      transition: background 0.15s, color 0.15s;
+      user-select: none;
+    }
+    .nav-item:hover { background: var(--bg3); color: var(--text); }
+    .nav-item.active { background: rgba(108,99,255,0.15); color: var(--accent2); }
+    .nav-item .nav-icon { font-size: 1rem; width: 18px; text-align: center; }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding: 12px 8px 0;
+      border-top: 1px solid var(--border);
+    }
+    .stop-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(248,113,113,0.3);
+      background: rgba(248,113,113,0.08);
+      color: var(--red);
+      font-size: 0.825rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+    .stop-btn:hover { background: rgba(248,113,113,0.18); border-color: var(--red); }
+
+    /* ── MAIN ── */
+    .main {
+      flex: 1;
+      padding: 32px;
+      max-width: 960px;
+      overflow-y: auto;
+    }
+
+    /* ── SECTION ── */
+    .section { display: none; }
+    .section.active { display: block; }
+
+    /* ── PAGE HEADER ── */
+    .page-header { margin-bottom: 28px; }
+    .page-header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+    .page-header p { color: var(--text2); font-size: 0.875rem; margin-top: 4px; }
+
+    /* ── CARDS ── */
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text3);
+      margin-bottom: 16px;
+    }
+
+    /* ── STATUS GRID ── */
+    .status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .status-tile {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+    }
+    .status-tile .label { font-size: 0.75rem; color: var(--text3); margin-bottom: 6px; }
+    .status-tile .value { font-size: 0.925rem; font-weight: 600; word-break: break-all; }
+    .status-tile .value.mono { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; }
+
+    /* ── BADGES ── */
+    .badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-green { background: rgba(52,211,153,0.12); color: var(--green); }
+    .badge-red   { background: rgba(248,113,113,0.12); color: var(--red); }
+    .badge-amber { background: rgba(251,191,36,0.12);  color: var(--amber); }
+    .badge-purple{ background: rgba(108,99,255,0.15);  color: var(--accent2); }
+    .badge-gray  { background: rgba(100,116,139,0.15); color: var(--text3); }
+
+    /* ── MODS LIST ── */
+    .mods-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .search-input {
+      flex: 1;
+      min-width: 160px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      color: var(--text);
+      font-size: 0.875rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .search-input:focus { border-color: var(--accent); }
+    .search-input::placeholder { color: var(--text3); }
+
+    .filter-btn {
+      padding: 8px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text2);
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+    .filter-btn:hover, .filter-btn.active { background: var(--bg4); color: var(--text); border-color: var(--accent); }
+
+    .mod-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      margin-bottom: 8px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .mod-row:hover { border-color: rgba(108,99,255,0.3); background: var(--bg4); }
+    .mod-row.disabled { opacity: 0.5; }
+
+    .mod-order {
+      width: 36px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--text3);
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .mod-type-badge {
+      width: 34px;
+      height: 22px;
+      border-radius: 5px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .mod-type-badge.css { background: rgba(52,211,153,0.15); color: var(--green); }
+    .mod-type-badge.js  { background: rgba(251,191,36,0.15);  color: var(--amber); }
+
+    .mod-name {
+      flex: 1;
+      font-size: 0.875rem;
+      font-weight: 500;
+      font-family: 'JetBrains Mono', monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mod-order-input {
+      width: 56px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 4px 8px;
+      color: var(--text);
+      font-size: 0.8rem;
+      font-family: 'JetBrains Mono', monospace;
+      text-align: center;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .mod-order-input:focus { border-color: var(--accent); }
+
+    /* ── TOGGLE SWITCH ── */
+    .toggle {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: var(--bg4);
+      border-radius: 999px;
+      transition: background 0.2s;
+      border: 1px solid var(--border);
+    }
+    .toggle input:checked + .toggle-track { background: var(--accent); border-color: var(--accent); }
+    .toggle-track::after {
+      content: '';
+      position: absolute;
+      left: 3px; top: 3px;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform 0.2s;
+    }
+    .toggle input:checked + .toggle-track::after { transform: translateX(20px); }
+
+    /* ── ACTIONS ── */
+    .actions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .action-card {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 16px;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .action-card:hover { border-color: var(--accent); background: var(--bg4); }
+    .action-card:active { transform: scale(0.98); }
+    .action-card.danger:hover { border-color: var(--red); }
+    .action-card .action-icon { font-size: 1.4rem; }
+    .action-card .action-title { font-size: 0.875rem; font-weight: 600; }
+    .action-card .action-desc { font-size: 0.775rem; color: var(--text2); line-height: 1.4; }
+
+    /* ── FORMS ── */
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
+
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    .form-label { font-size: 0.8rem; font-weight: 600; color: var(--text2); }
+    .form-hint  { font-size: 0.72rem; color: var(--text3); margin-top: 2px; }
+    .form-input {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 9px 12px;
+      color: var(--text);
+      font-size: 0.875rem;
+      font-family: 'JetBrains Mono', monospace;
+      outline: none;
+      transition: border-color 0.15s;
+      width: 100%;
+    }
+    .form-input:focus { border-color: var(--accent); }
+
+    .form-row-full { grid-column: 1 / -1; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 18px;
+      border-radius: var(--radius-sm);
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      font-family: inherit;
+      transition: all 0.15s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: #7c73f1; box-shadow: var(--glow); }
+    .btn-secondary {
+      background: var(--bg3);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--bg4); border-color: var(--accent); }
+
+    .save-row { display: flex; justify-content: flex-end; margin-top: 20px; }
+
+    /* ── IMPORT DROP ZONE ── */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 40px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.15s;
+      position: relative;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(108,99,255,0.06);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute; inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%; height: 100%;
+    }
+    .drop-zone .dz-icon { font-size: 2rem; margin-bottom: 10px; }
+    .drop-zone .dz-label { font-size: 0.875rem; color: var(--text2); }
+    .drop-zone .dz-sub { font-size: 0.775rem; color: var(--text3); margin-top: 4px; }
+
+    /* ── TOAST ── */
+    #toast-container {
+      position: fixed;
+      bottom: 28px;
+      right: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 9999;
+    }
+    .toast {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 18px;
+      font-size: 0.85rem;
+      max-width: 340px;
+      box-shadow: var(--shadow);
+      animation: slideIn 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .toast.success { border-left: 3px solid var(--green); }
+    .toast.error   { border-left: 3px solid var(--red); }
+    .toast.info    { border-left: 3px solid var(--accent2); }
+    .toast .toast-icon { font-size: 1rem; flex-shrink: 0; }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to   { opacity: 0; }
+    }
+
+    /* ── SPINNER ── */
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.2);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── LOADING OVERLAY ── */
+    .loading-overlay {
+      position: fixed; inset: 0;
+      background: rgba(13,15,20,0.8);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 8888;
+      backdrop-filter: blur(4px);
+    }
+    .loading-overlay.hidden { display: none; }
+    .loading-box {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px 40px;
+      text-align: center;
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+    }
+    .loading-box .spinner { width: 28px; height: 28px; }
+    .loading-box p { font-size: 0.875rem; color: var(--text2); }
+
+    /* ── MODAL ── */
+    .modal-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9000;
+      backdrop-filter: blur(4px);
+    }
+    .modal-backdrop.hidden { display: none; }
+    .modal {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      width: 420px;
+      max-width: 90vw;
+      box-shadow: var(--shadow);
+    }
+    .modal h2 { font-size: 1.1rem; margin-bottom: 10px; }
+    .modal p  { font-size: 0.875rem; color: var(--text2); margin-bottom: 20px; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+    /* ── EMPTY STATE ── */
+    .empty-state {
+      text-align: center;
+      padding: 48px 16px;
+      color: var(--text3);
+    }
+    .empty-state .es-icon { font-size: 2.5rem; margin-bottom: 10px; }
+    .empty-state p { font-size: 0.875rem; }
+
+    /* ── DIVIDER ── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+  </style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div class="loading-overlay hidden" id="loading-overlay">
+  <div class="loading-box">
+    <div class="spinner"></div>
+    <p id="loading-text">Working…</p>
+  </div>
+</div>
+
+<!-- Confirm modal -->
+<div class="modal-backdrop hidden" id="modal-backdrop">
+  <div class="modal">
+    <h2 id="modal-title">Confirm</h2>
+    <p id="modal-body">Are you sure?</p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="modal-confirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<div class="layout">
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <div class="icon">🎨</div>
+      <div>
+        <div class="name">Vivaldi Mods</div>
+        <div class="sub">Mod Interceptor UI</div>
+      </div>
+    </div>
+
+    <div class="nav-item active" data-section="status" id="nav-status">
+      <span class="nav-icon">📊</span> Status
+    </div>
+    <div class="nav-item" data-section="mods" id="nav-mods">
+      <span class="nav-icon">🧩</span> Mods
+    </div>
+    <div class="nav-item" data-section="import" id="nav-import">
+      <span class="nav-icon">📥</span> Import
+    </div>
+    <div class="nav-item" data-section="config" id="nav-config">
+      <span class="nav-icon">⚙️</span> Config
+    </div>
+    <div class="nav-item" data-section="actions" id="nav-actions">
+      <span class="nav-icon">⚡</span> Actions
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="stop-btn" id="stop-server-btn">
+        <span>⏹</span> Stop Server
+      </button>
+    </div>
+  </nav>
+
+  <!-- MAIN CONTENT -->
+  <main class="main">
+
+    <!-- ── STATUS ── -->
+    <section class="section active" id="section-status">
+      <div class="page-header">
+        <h1>System Status</h1>
+        <p>Current state of the interceptor, Vivaldi installation, and active mods.</p>
+      </div>
+
+      <div class="card" id="status-hook-card">
+        <div class="card-title">IFEO Hook</div>
+        <div class="status-grid" id="status-hook-grid">
+          <div class="status-tile"><div class="label">Status</div><div class="value" id="s-hook-status">—</div></div>
+          <div class="status-tile"><div class="label">Target</div><div class="value mono" id="s-hook-target">—</div></div>
+          <div class="status-tile"><div class="label">Debugger Path</div><div class="value mono" id="s-hook-debugger" style="font-size:0.7rem;">—</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Vivaldi Installation</div>
+        <div class="status-grid">
+          <div class="status-tile"><div class="label">Found</div><div class="value" id="s-vivaldi-found">—</div></div>
+          <div class="status-tile"><div class="label">Version</div><div class="value mono" id="s-vivaldi-version">—</div></div>
+          <div class="status-tile"><div class="label">window.html</div><div class="value" id="s-patched">—</div></div>
+          <div class="status-tile"><div class="label">Executable</div><div class="value mono" id="s-vivaldi-path" style="font-size:0.7rem;">—</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Storage & Mods</div>
+        <div class="status-grid">
+          <div class="status-tile"><div class="label">Storage Mode</div><div class="value" id="s-storage-mode">—</div></div>
+          <div class="status-tile"><div class="label">App Dir</div><div class="value mono" id="s-app-dir" style="font-size:0.7rem;">—</div></div>
+          <div class="status-tile"><div class="label">Total Mods</div><div class="value" id="s-total-mods">—</div></div>
+          <div class="status-tile"><div class="label">Active CSS</div><div class="value" id="s-css-mods">—</div></div>
+          <div class="status-tile"><div class="label">Active JS</div><div class="value" id="s-js-mods">—</div></div>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end;">
+        <button class="btn btn-secondary" id="refresh-status-btn">↻ Refresh</button>
+      </div>
+    </section>
+
+    <!-- ── MODS ── -->
+    <section class="section" id="section-mods">
+      <div class="page-header">
+        <h1>Mods</h1>
+        <p>Toggle mods on/off and adjust their load order priority. Changes recompile the bundle immediately.</p>
+      </div>
+
+      <div class="card" style="padding:16px 20px;">
+        <div class="mods-toolbar">
+          <input class="search-input" type="text" id="mods-search" placeholder="🔍  Search mods…" />
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="css">CSS</button>
+          <button class="filter-btn" data-filter="js">JS</button>
+          <button class="filter-btn" data-filter="enabled">Enabled</button>
+          <button class="filter-btn" data-filter="disabled">Disabled</button>
+          <button class="btn btn-secondary" id="rescan-mods-btn" style="margin-left:auto;">🔄 Rescan</button>
+        </div>
+        <div id="mods-list">
+          <div class="empty-state"><div class="es-icon">🎭</div><p>Loading mods…</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── IMPORT ── -->
+    <section class="section" id="section-import">
+      <div class="page-header">
+        <h1>Import Mod</h1>
+        <p>Drag &amp; drop or pick a <code>.css</code> or <code>.js</code> file to register it with the mod manager.</p>
+      </div>
+
+      <div class="card">
+        <div class="drop-zone" id="drop-zone">
+          <input type="file" id="import-file-input" accept=".css,.js" multiple />
+          <div class="dz-icon">📂</div>
+          <div class="dz-label">Drop <code>.css</code> or <code>.js</code> files here</div>
+          <div class="dz-sub">Or click to browse</div>
+        </div>
+        <div id="import-queue" style="margin-top:16px;"></div>
+      </div>
+    </section>
+
+    <!-- ── CONFIG ── -->
+    <section class="section" id="section-config">
+      <div class="page-header">
+        <h1>Configuration</h1>
+        <p>Edit all fields in <code>mods_config.json</code>. Changes are saved to disk immediately.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Vivaldi Path</div>
+        <div class="form-group">
+          <label class="form-label">vivaldi.exe path</label>
+          <input class="form-input" type="text" id="cfg-vivaldi-path" placeholder="e.g. M:\Vivaldi\Application\vivaldi.exe" />
+          <span class="form-hint">Full path to the Vivaldi executable. Leave blank to use auto-discovery.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Injection Settings</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">UI Ready Selector</label>
+            <input class="form-input" type="text" id="cfg-ui-selector" placeholder="#browser" />
+            <span class="form-hint">CSS selector polled to detect when Vivaldi's UI is ready.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Init Delay (ms)</label>
+            <input class="form-input" type="number" id="cfg-init-delay" placeholder="60" min="0" />
+            <span class="form-hint">Delay after UI ready before executing JS mods.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Detach Timeout (ms)</label>
+            <input class="form-input" type="number" id="cfg-detach-timeout" placeholder="5000" min="0" />
+            <span class="form-hint">Timeout waiting for process handles on launch.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Target Exe Name</label>
+            <input class="form-input" type="text" id="cfg-exe-name" placeholder="vivaldi.exe" />
+            <span class="form-hint">Executable name registered in IFEO (Snapshot: vivaldi_snapshot.exe).</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Behavior</div>
+        <div style="display:flex; align-items:center; gap:14px;">
+          <label class="toggle">
+            <input type="checkbox" id="cfg-auto-patch" />
+            <span class="toggle-track"></span>
+          </label>
+          <div>
+            <div style="font-size:0.875rem; font-weight:600;">Auto-Patch on Launch</div>
+            <div style="font-size:0.775rem; color:var(--text2); margin-top:2px;">Automatically recompile & patch window.html on every Vivaldi launch.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="save-row">
+        <button class="btn btn-primary" id="save-config-btn">💾 Save Config</button>
+      </div>
+    </section>
+
+    <!-- ── ACTIONS ── -->
+    <section class="section" id="section-actions">
+      <div class="page-header">
+        <h1>Actions</h1>
+        <p>One-click operations — equivalent to running CLI subcommands.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Bundle & Patching</div>
+        <div class="actions-grid">
+          <div class="action-card" id="action-patch">
+            <div class="action-icon">🔧</div>
+            <div class="action-title">Patch Now</div>
+            <div class="action-desc">Compile bundles and inject hook into window.html.</div>
+          </div>
+          <div class="action-card" id="action-unpatch">
+            <div class="action-icon">↩️</div>
+            <div class="action-title">Unpatch</div>
+            <div class="action-desc">Restore pristine window.html and remove bundle files.</div>
+          </div>
+          <div class="action-card" id="action-unpatch-clean">
+            <div class="action-icon">🧹</div>
+            <div class="action-title">Unpatch + Clean</div>
+            <div class="action-desc">Unpatch and also delete window.html.orig backup.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:0;">
+        <div class="card-title">IFEO Hook (requires UAC)</div>
+        <div class="actions-grid">
+          <div class="action-card" id="action-install-hook">
+            <div class="action-icon">🪝</div>
+            <div class="action-title">Install Hook</div>
+            <div class="action-desc">Register IFEO debugger in Windows Registry. UAC prompt will appear.</div>
+          </div>
+          <div class="action-card danger" id="action-uninstall-hook">
+            <div class="action-icon">🗑️</div>
+            <div class="action-title">Uninstall Hook</div>
+            <div class="action-desc">Remove IFEO debugger entry from Windows Registry. UAC prompt will appear.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────
+let modsData = [];
+let currentFilter = 'all';
+let searchQuery = '';
+let currentConfig = null;
+
+// ─────────────────────────────────────────────────────────────
+// Toast
+// ─────────────────────────────────────────────────────────────
+function toast(msg, type = 'info', duration = 3500) {
+  const icons = { success: '✅', error: '❌', info: 'ℹ️' };
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span class="toast-icon">${icons[type]}</span><span>${msg}</span>`;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => {
+    el.style.animation = 'fadeOut 0.3s ease forwards';
+    setTimeout(() => el.remove(), 300);
+  }, duration);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Loading overlay
+// ─────────────────────────────────────────────────────────────
+function showLoading(text = 'Working…') {
+  document.getElementById('loading-text').textContent = text;
+  document.getElementById('loading-overlay').classList.remove('hidden');
+}
+function hideLoading() {
+  document.getElementById('loading-overlay').classList.add('hidden');
+}
+
+// ─────────────────────────────────────────────────────────────
+// Confirm modal
+// ─────────────────────────────────────────────────────────────
+function confirm(title, body) {
+  return new Promise(resolve => {
+    document.getElementById('modal-title').textContent = title;
+    document.getElementById('modal-body').textContent = body;
+    document.getElementById('modal-backdrop').classList.remove('hidden');
+    const yes = () => { cleanup(); resolve(true); };
+    const no  = () => { cleanup(); resolve(false); };
+    function cleanup() {
+      document.getElementById('modal-backdrop').classList.add('hidden');
+      document.getElementById('modal-confirm').removeEventListener('click', yes);
+      document.getElementById('modal-cancel').removeEventListener('click', no);
+    }
+    document.getElementById('modal-confirm').addEventListener('click', yes);
+    document.getElementById('modal-cancel').addEventListener('click', no);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// API helpers
+// ─────────────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { message: text }; }
+  if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`);
+  return data;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Navigation
+// ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    item.classList.add('active');
+    const sec = item.dataset.section;
+    document.getElementById(`section-${sec}`).classList.add('active');
+    if (sec === 'mods') loadMods();
+    if (sec === 'status') loadStatus();
+    if (sec === 'config') loadConfig();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Status
+// ─────────────────────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const d = await api('/api/status');
+
+    // Hook
+    const hookActive = d.hook.active;
+    const hookMatchesSelf = d.hook.matches_interceptor;
+    let hookBadge;
+    if (hookActive && hookMatchesSelf) hookBadge = `<span class="badge badge-green">● ACTIVE</span>`;
+    else if (hookActive) hookBadge = `<span class="badge badge-amber">⚠ MISMATCH</span>`;
+    else hookBadge = `<span class="badge badge-red">○ INACTIVE</span>`;
+    document.getElementById('s-hook-status').innerHTML = hookBadge;
+    document.getElementById('s-hook-target').textContent = d.hook.target_image || '—';
+    document.getElementById('s-hook-debugger').textContent = d.hook.debugger_path || 'Not set';
+
+    // Vivaldi
+    document.getElementById('s-vivaldi-found').innerHTML = d.vivaldi.found
+      ? `<span class="badge badge-green">Found</span>` : `<span class="badge badge-red">Not Found</span>`;
+    document.getElementById('s-vivaldi-version').textContent = d.vivaldi.version || '—';
+    document.getElementById('s-patched').innerHTML = d.vivaldi.patched
+      ? `<span class="badge badge-green">Patched ✓</span>` : `<span class="badge badge-amber">Unpatched</span>`;
+    document.getElementById('s-vivaldi-path').textContent = d.vivaldi.path || 'Not configured';
+
+    // Storage
+    const modeLabel = d.storage.mode === 'portable' ? 'Portable' : 'Standard (%APPDATA%)';
+    document.getElementById('s-storage-mode').innerHTML = `<span class="badge badge-purple">${modeLabel}</span>`;
+    document.getElementById('s-app-dir').textContent = d.storage.app_dir;
+    document.getElementById('s-total-mods').textContent = d.mods.total;
+    document.getElementById('s-css-mods').textContent = d.mods.enabled_css;
+    document.getElementById('s-js-mods').textContent = d.mods.enabled_js;
+  } catch (e) {
+    toast('Failed to load status: ' + e.message, 'error');
+  }
+}
+
+document.getElementById('refresh-status-btn').addEventListener('click', loadStatus);
+
+// ─────────────────────────────────────────────────────────────
+// Mods
+// ─────────────────────────────────────────────────────────────
+async function loadMods(rescan = false) {
+  try {
+    const url = rescan ? '/api/mods?rescan=true' : '/api/mods';
+    modsData = await api(url);
+    renderMods();
+  } catch (e) {
+    toast('Failed to load mods: ' + e.message, 'error');
+  }
+}
+
+function renderMods() {
+  const list = document.getElementById('mods-list');
+  let filtered = modsData.filter(m => {
+    const matchSearch = m.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchFilter =
+      currentFilter === 'all' ? true :
+      currentFilter === 'css' ? m.mod_type === 'css' :
+      currentFilter === 'js'  ? m.mod_type === 'js'  :
+      currentFilter === 'enabled'  ? m.enabled :
+      currentFilter === 'disabled' ? !m.enabled : true;
+    return matchSearch && matchFilter;
+  });
+
+  if (filtered.length === 0) {
+    list.innerHTML = `<div class="empty-state"><div class="es-icon">🎭</div><p>No mods match this filter.</p></div>`;
+    return;
+  }
+
+  list.innerHTML = filtered.map(m => `
+    <div class="mod-row ${m.enabled ? '' : 'disabled'}" data-name="${escHtml(m.name)}">
+      <div class="mod-order">#${m.order}</div>
+      <div class="mod-type-badge ${m.mod_type}">${m.mod_type.toUpperCase()}</div>
+      <div class="mod-name" title="${escHtml(m.name)}">${escHtml(m.name)}</div>
+      <input
+        class="mod-order-input"
+        type="number"
+        value="${m.order}"
+        min="-999" max="9999"
+        title="Load order (lower = earlier)"
+        data-name="${escHtml(m.name)}"
+      />
+      <label class="toggle" title="${m.enabled ? 'Click to disable' : 'Click to enable'}">
+        <input type="checkbox" ${m.enabled ? 'checked' : ''} data-name="${escHtml(m.name)}" class="mod-toggle-input" />
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+  `).join('');
+
+  // Toggle handlers
+  list.querySelectorAll('.mod-toggle-input').forEach(input => {
+    input.addEventListener('change', async () => {
+      const name = input.dataset.name;
+      try {
+        showLoading('Toggling mod…');
+        const res = await api('/api/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        // Update local state
+        const mod = modsData.find(m => m.name === name);
+        if (mod) mod.enabled = res.enabled;
+        renderMods();
+        toast(`${name} is now ${res.enabled ? 'enabled' : 'disabled'}.`, 'success');
+      } catch (e) {
+        toast('Toggle failed: ' + e.message, 'error');
+        input.checked = !input.checked; // revert
+      } finally { hideLoading(); }
+    });
+  });
+
+  // Order change handlers (debounced)
+  list.querySelectorAll('.mod-order-input').forEach(input => {
+    let timer;
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const name = input.dataset.name;
+        const order = parseInt(input.value, 10);
+        if (isNaN(order)) return;
+        try {
+          await api('/api/set-order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, order })
+          });
+          const mod = modsData.find(m => m.name === name);
+          if (mod) { mod.order = order; modsData.sort((a,b) => a.order - b.order || a.name.localeCompare(b.name)); }
+          toast(`Order for ${name} updated.`, 'success');
+        } catch (e) {
+          toast('Failed to update order: ' + e.message, 'error');
+        }
+      }, 500);
+    });
+  });
+}
+
+// Search
+document.getElementById('mods-search').addEventListener('input', e => {
+  searchQuery = e.target.value;
+  renderMods();
+});
+
+// Filter buttons
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = btn.dataset.filter;
+    renderMods();
+  });
+});
+
+// Rescan
+document.getElementById('rescan-mods-btn').addEventListener('click', async () => {
+  showLoading('Rescanning mod files…');
+  await loadMods(true);
+  hideLoading();
+  toast('Rescan complete.', 'success');
+});
+
+// ─────────────────────────────────────────────────────────────
+// Import
+// ─────────────────────────────────────────────────────────────
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('import-file-input');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+async function handleFiles(files) {
+  if (!files || files.length === 0) return;
+  const queue = document.getElementById('import-queue');
+  queue.innerHTML = '';
+  for (const file of files) {
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['css', 'js'].includes(ext)) {
+      toast(`Skipping ${file.name} — only .css and .js supported.`, 'error');
+      continue;
+    }
+    await importFile(file, queue);
+  }
+  fileInput.value = '';
+}
+
+async function importFile(file, queue) {
+  const row = document.createElement('div');
+  row.className = 'mod-row';
+  row.innerHTML = `
+    <div class="mod-type-badge ${file.name.endsWith('.css') ? 'css' : 'js'}">${file.name.endsWith('.css') ? 'CSS' : 'JS'}</div>
+    <div class="mod-name">${escHtml(file.name)}</div>
+    <span class="badge badge-gray">Importing…</span>
+  `;
+  queue.appendChild(row);
+
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    await api('/api/import', { method: 'POST', body: form });
+    row.querySelector('.badge').className = 'badge badge-green';
+    row.querySelector('.badge').textContent = 'Imported ✓';
+    toast(`Imported ${file.name}`, 'success');
+  } catch (e) {
+    row.querySelector('.badge').className = 'badge badge-red';
+    row.querySelector('.badge').textContent = 'Failed';
+    toast(`Import failed for ${file.name}: ` + e.message, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Config
+// ─────────────────────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    currentConfig = await api('/api/config');
+    document.getElementById('cfg-vivaldi-path').value    = currentConfig.vivaldi_path || '';
+    document.getElementById('cfg-ui-selector').value    = currentConfig.ui_ready_selector || '';
+    document.getElementById('cfg-init-delay').value     = currentConfig.init_delay_ms ?? '';
+    document.getElementById('cfg-detach-timeout').value = currentConfig.detach_timeout_ms ?? '';
+    document.getElementById('cfg-exe-name').value       = currentConfig.exe_name || '';
+    document.getElementById('cfg-auto-patch').checked   = !!currentConfig.auto_patch;
+  } catch (e) {
+    toast('Failed to load config: ' + e.message, 'error');
+  }
+}
+
+document.getElementById('save-config-btn').addEventListener('click', async () => {
+  const body = {
+    vivaldi_path:      document.getElementById('cfg-vivaldi-path').value.trim() || null,
+    ui_ready_selector: document.getElementById('cfg-ui-selector').value.trim(),
+    init_delay_ms:     parseInt(document.getElementById('cfg-init-delay').value, 10) || 60,
+    detach_timeout_ms: parseInt(document.getElementById('cfg-detach-timeout').value, 10) || 5000,
+    exe_name:          document.getElementById('cfg-exe-name').value.trim() || 'vivaldi.exe',
+    auto_patch:        document.getElementById('cfg-auto-patch').checked,
+  };
+  try {
+    showLoading('Saving config…');
+    await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    toast('Config saved!', 'success');
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  } finally { hideLoading(); }
+});
+
+// ─────────────────────────────────────────────────────────────
+// Actions
+// ─────────────────────────────────────────────────────────────
+async function runAction(label, endpoint, loadingText, confirmText = null) {
+  if (confirmText) {
+    const ok = await confirm(label, confirmText);
+    if (!ok) return;
+  }
+  try {
+    showLoading(loadingText);
+    const res = await api(endpoint, { method: 'POST' });
+    toast(res.message || `${label} succeeded.`, 'success');
+  } catch (e) {
+    toast(`${label} failed: ` + e.message, 'error');
+  } finally { hideLoading(); }
+}
+
+document.getElementById('action-patch').addEventListener('click',
+  () => runAction('Patch', '/api/patch', 'Compiling & patching…'));
+
+document.getElementById('action-unpatch').addEventListener('click',
+  () => runAction('Unpatch', '/api/unpatch', 'Restoring window.html…',
+    'This will restore the original window.html and remove compiled bundles.'));
+
+document.getElementById('action-unpatch-clean').addEventListener('click',
+  () => runAction('Unpatch + Clean', '/api/unpatch?clean=true', 'Restoring & cleaning…',
+    'This will restore window.html AND delete the window.html.orig backup.'));
+
+document.getElementById('action-install-hook').addEventListener('click',
+  () => runAction('Install Hook', '/api/install-hook', 'Installing IFEO hook…',
+    'This will trigger a UAC elevation prompt. A terminal window may briefly appear.'));
+
+document.getElementById('action-uninstall-hook').addEventListener('click',
+  () => runAction('Uninstall Hook', '/api/uninstall-hook', 'Removing IFEO hook…',
+    'This will remove the IFEO hook from Windows Registry. UAC elevation required.'));
+
+// ─────────────────────────────────────────────────────────────
+// Stop server
+// ─────────────────────────────────────────────────────────────
+document.getElementById('stop-server-btn').addEventListener('click', async () => {
+  const ok = await confirm('Stop Server', 'The web server will shut down. You can restart it by running: interceptor webui');
+  if (!ok) return;
+  try {
+    await fetch('/api/shutdown', { method: 'POST' });
+  } catch {}
+  document.body.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg);font-family:Inter,sans-serif;color:var(--text);">
+      <div style="text-align:center;">
+        <div style="font-size:3rem;margin-bottom:16px;">⏹</div>
+        <h2 style="font-size:1.25rem;margin-bottom:8px;">Server stopped</h2>
+        <p style="color:var(--text2);font-size:0.875rem;">Run <code style="background:var(--bg3);padding:2px 8px;border-radius:5px;">interceptor webui</code> to restart.</p>
+      </div>
+    </div>`;
+});
+
+// ─────────────────────────────────────────────────────────────
+// Utility
+// ─────────────────────────────────────────────────────────────
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─────────────────────────────────────────────────────────────
+// Boot
+// ─────────────────────────────────────────────────────────────
+loadStatus();
+</script>
+</body>
+</html>

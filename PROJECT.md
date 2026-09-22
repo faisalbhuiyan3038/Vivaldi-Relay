@@ -166,6 +166,9 @@ If `portable.lock`, `mods_config.json`, or a `user_mods/` folder exists directly
 | **`discovery.rs`** | `src/discovery.rs` | Dynamic drive enumeration (`GetLogicalDrives`), registry lookups, snapshot detection, semantic version parser, UNC prefix cleaner. |
 | **`config.rs`** | `src/config.rs` | Schema serialization (`ModConfig`, `ModItem`), portable mode detection (`is_portable`), JSON persistence, mod toggling. |
 | **`os_hook.rs`** | `src/os_hook.rs` | Reads/writes IFEO `Debugger` key in `HKLM` for custom target exe names, automatic UAC elevation via `ShellExecuteExW("runas")`. |
+| **`lib.rs`** | `src/lib.rs` | Shared library crate root — re-exports all modules so both the `interceptor` and `webui` binaries can share them without code duplication. |
+| **`webui/mod.rs`** | `src/webui/mod.rs` | Embedded `tiny_http` HTTP server. Serves a self-contained SPA (`ui.html` baked in via `include_str!`). Routes 12 REST API endpoints to lib functions. |
+| **`webui/main.rs`** | `src/webui/main.rs` | Entry point for the standalone `webui.exe` binary. Parses `--port` / `--open` flags. |
 
 ---
 
@@ -220,6 +223,10 @@ SUBCOMMANDS:
     uninstall-hook [OPTS] Remove IFEO debugger hook and clean up hardlinks (elevates via UAC if needed)
                           Options:
                             --target <EXE_NAME>  Specify target exe name (default: vivaldi.exe)
+    webui [OPTIONS]       Launch local web management UI at http://127.0.0.1:7979
+                          Options:
+                            --port <PORT>        Port to bind (default: 7979)
+                            --open               Auto-open browser after server starts
     help                  Print this help message
 ```
 
@@ -239,6 +246,19 @@ Whenever modifications are made to this codebase, developers/agents must adhere 
 ---
 
 ## 8. Change Log
+
+### [v0.1.5] - 2026-09-22
+
+**Feature: Local WebUI (`interceptor webui`)**
+
+- **Feature**: Added `interceptor webui [--port PORT] [--open]` subcommand that launches a local HTTP server (default port 7979) serving a self-contained single-page management UI.
+- **Feature**: New `src/webui/mod.rs` — embedded `tiny_http` server with 12 REST API endpoints wrapping all existing lib functions. No code duplication.
+- **Feature**: New `src/webui/ui.html` — dark glassmorphism SPA baked into the binary via `include_str!`. Sections: Status dashboard, Mods panel (toggle + order), Drag-and-drop Import, full Config editor, Actions (patch/unpatch/hook), Stop Server button.
+- **Feature**: New `src/webui/main.rs` — standalone `webui.exe` entry point (both `interceptor webui` and the standalone binary work).
+- **Refactor**: Extracted all shared modules into a `[lib]` crate (`src/lib.rs`). Both `interceptor` and `webui` binaries import from `vivaldi_mod_interceptor::*`. Zero logic changes to existing modules.
+- **Dep**: Added `tiny_http = "0.12"` (pure Rust, zero async runtime, ~100 KB).
+- **Docs**: Updated Module Map and CLI Specification in `PROJECT.md`.
+- **Verified**: `cargo build --release` produces both `interceptor.exe` (~2.3 MB) and `webui.exe` (~2.2 MB). All 4 existing tests continue to pass.
 
 ### [v0.1.4] - 2026-09-15
 

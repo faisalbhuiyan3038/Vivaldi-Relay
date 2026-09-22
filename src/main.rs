@@ -1,13 +1,11 @@
-mod bundler;
-mod config;
-mod discovery;
-mod launcher;
-mod os_hook;
-mod patcher;
-
-use config::{ModConfig, ModType};
-use discovery::VivaldiTarget;
-use os_hook::HookStatus;
+use vivaldi_mod_interceptor::bundler;
+use vivaldi_mod_interceptor::config::{ModConfig, ModType};
+use vivaldi_mod_interceptor::discovery;
+use vivaldi_mod_interceptor::discovery::VivaldiTarget;
+use vivaldi_mod_interceptor::launcher;
+use vivaldi_mod_interceptor::os_hook;
+use vivaldi_mod_interceptor::os_hook::HookStatus;
+use vivaldi_mod_interceptor::patcher;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -91,6 +89,13 @@ fn main() {
         "uninstall-hook" => {
             let target_arg = get_flag_value(&args, "--target");
             run_uninstall_hook(target_arg.as_deref());
+        }
+        "webui" => {
+            let port = get_flag_value(&args, "--port")
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(7979);
+            let open_browser = args.iter().any(|a| a == "--open" || a == "-o");
+            vivaldi_mod_interceptor::webui::run(port, open_browser);
         }
         "help" | "--help" | "-h" => {
             print_help();
@@ -899,6 +904,10 @@ SUBCOMMANDS:
     uninstall-hook [OPTS] Remove IFEO debugger hook (elevates via UAC if needed)
                           Options:
                             --target <EXE_NAME>  Specify target exe name (default: vivaldi.exe)
+    webui [OPTS]          Launch the local web management interface at http://127.0.0.1:7979
+                          Options:
+                            --port <PORT>        Port to bind (default: 7979)
+                            --open               Auto-open the browser after server starts
     version               Print version information
     help                  Print this help message
 "#);
