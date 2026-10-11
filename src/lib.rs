@@ -2,6 +2,7 @@
 // Both the `interceptor` binary and the `webui` binary import from here.
 
 pub mod bundler;
+pub mod bundle_patcher;
 pub mod config;
 pub mod discovery;
 pub mod launcher;

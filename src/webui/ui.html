@@ -633,6 +633,7 @@
           <div class="status-tile"><div class="label">Total Mods</div><div class="value" id="s-total-mods">—</div></div>
           <div class="status-tile"><div class="label">Active CSS</div><div class="value" id="s-css-mods">—</div></div>
           <div class="status-tile"><div class="label">Active JS</div><div class="value" id="s-js-mods">—</div></div>
+          <div class="status-tile"><div class="label">Stretch Tabs</div><div class="value" id="s-stretch-tabs">—</div></div>
         </div>
       </div>
 
@@ -726,18 +727,28 @@
       </div>
 
       <div class="card">
-        <div class="card-title">Behavior</div>
-        <div style="display:flex; align-items:center; gap:14px;">
-          <label class="toggle">
-            <input type="checkbox" id="cfg-auto-patch" />
-            <span class="toggle-track"></span>
-          </label>
-          <div>
-            <div style="font-size:0.875rem; font-weight:600;">Auto-Patch on Launch</div>
-            <div style="font-size:0.775rem; color:var(--text2); margin-top:2px;">Automatically recompile & patch window.html on every Vivaldi launch.</div>
-          </div>
+      <div class="card-title">Behavior</div>
+      <div style="display:flex; align-items:center; gap:14px; margin-bottom:14px;">
+        <label class="toggle">
+          <input type="checkbox" id="cfg-auto-patch" />
+          <span class="toggle-track"></span>
+        </label>
+        <div>
+          <div style="font-size:0.875rem; font-weight:600;">Auto-Patch on Launch</div>
+          <div style="font-size:0.775rem; color:var(--text2); margin-top:2px;">Automatically recompile and patch window.html on every Vivaldi launch.</div>
         </div>
       </div>
+      <div style="display:flex; align-items:center; gap:14px;">
+        <label class="toggle">
+          <input type="checkbox" id="cfg-stretch-tabs" />
+          <span class="toggle-track"></span>
+        </label>
+        <div>
+          <div style="font-size:0.875rem; font-weight:600;">Stretch Tabs</div>
+          <div style="font-size:0.775rem; color:var(--text2); margin-top:2px;">Patches bundle.js to remove the max tab width limit, letting tabs fill the entire tab bar.</div>
+        </div>
+      </div>
+    </div>
 
       <div class="save-row">
         <button class="btn btn-primary" id="save-config-btn">💾 Save Config</button>
@@ -908,6 +919,9 @@ async function loadStatus() {
     document.getElementById('s-total-mods').textContent = d.mods.total;
     document.getElementById('s-css-mods').textContent = d.mods.enabled_css;
     document.getElementById('s-js-mods').textContent = d.mods.enabled_js;
+    document.getElementById('s-stretch-tabs').innerHTML = d.settings.stretch_tabs
+      ? `<span class="badge badge-green">Active</span>`
+      : `<span class="badge badge-gray">Inactive</span>`;
   } catch (e) {
     toast('Failed to load status: ' + e.message, 'error');
   }
@@ -1170,10 +1184,24 @@ async function loadConfig() {
     document.getElementById('cfg-detach-timeout').value = currentConfig.detach_timeout_ms ?? '';
     document.getElementById('cfg-exe-name').value       = currentConfig.exe_name || '';
     document.getElementById('cfg-auto-patch').checked   = !!currentConfig.auto_patch;
+    document.getElementById('cfg-stretch-tabs').checked = !!currentConfig.stretch_tabs;
   } catch (e) {
     toast('Failed to load config: ' + e.message, 'error');
   }
 }
+
+document.getElementById('cfg-stretch-tabs').addEventListener('change', async (e) => {
+  try {
+    showLoading('Toggling stretch-tabs…');
+    const res = await api('/api/stretch-tabs', { method: 'POST' });
+    toast(res.message || 'Stretch-tabs toggled.', 'success');
+    e.target.checked = res.stretch_tabs;
+    loadStatus();
+  } catch (err) {
+    toast('Toggle failed: ' + err.message, 'error');
+    e.target.checked = !e.target.checked;
+  } finally { hideLoading(); }
+});
 
 document.getElementById('save-config-btn').addEventListener('click', async () => {
   const body = {
@@ -1183,6 +1211,7 @@ document.getElementById('save-config-btn').addEventListener('click', async () =>
     detach_timeout_ms: parseInt(document.getElementById('cfg-detach-timeout').value, 10) || 5000,
     exe_name:          document.getElementById('cfg-exe-name').value.trim() || 'vivaldi.exe',
     auto_patch:        document.getElementById('cfg-auto-patch').checked,
+    stretch_tabs:      document.getElementById('cfg-stretch-tabs').checked,
   };
   try {
     showLoading('Saving config…');

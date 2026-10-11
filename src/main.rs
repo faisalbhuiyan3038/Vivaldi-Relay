@@ -1,4 +1,5 @@
 use vivaldi_mod_interceptor::bundler;
+use vivaldi_mod_interceptor::bundle_patcher;
 use vivaldi_mod_interceptor::config::{ModConfig, ModType};
 use vivaldi_mod_interceptor::discovery;
 use vivaldi_mod_interceptor::discovery::VivaldiTarget;
@@ -65,6 +66,9 @@ fn main() {
                 std::process::exit(1);
             }
             run_toggle(&args[2]);
+        }
+        "stretch-tabs" => {
+            run_stretch_tabs();
         }
         "import" => {
             if args.len() < 3 {
@@ -201,6 +205,15 @@ fn ensure_patched_and_bundled(config: &mut ModConfig, target: &VivaldiTarget) ->
         // Inject script into window.html
         if !patched {
             patcher::patch_window_html(&target.window_html)?;
+        }
+    }
+
+    if config.stretch_tabs {
+        let vivaldi_bundle_js = target.resources_dir.join("bundle.js");
+        match bundle_patcher::patch_bundle_js(&vivaldi_bundle_js) {
+            Ok(true) => println!("  Stretch-tabs mod applied to bundle.js"),
+            Ok(false) => {}
+            Err(e) => eprintln!("  Warning: Could not apply stretch-tabs mod: {}", e),
         }
     }
 
@@ -460,6 +473,11 @@ fn run_status(as_json: bool) {
     let total_mods = config.mods.len();
     let enabled_css = config.mods.iter().filter(|m| m.enabled && m.mod_type == ModType::Css).count();
     let enabled_js = config.mods.iter().filter(|m| m.enabled && m.mod_type == ModType::Js).count();
+    let vivaldi_bundle_js = target_result.as_ref().ok().map(|t| t.resources_dir.join("bundle.js"));
+    let stretch_tabs_patched = vivaldi_bundle_js
+        .as_deref()
+        .and_then(|p| bundle_patcher::is_bundle_js_patched(p).ok())
+        .unwrap_or(false);
 
     if as_json {
         let (hook_active, debugger_path, matches_self) = match &hook_status {
@@ -488,7 +506,8 @@ fn run_status(as_json: bool) {
                 "ui_ready_selector": config.ui_ready_selector,
                 "init_delay_ms": config.init_delay_ms,
                 "detach_timeout_ms": config.detach_timeout_ms,
-                "exe_name": config.exe_name
+                "exe_name": config.exe_name,
+                "stretch_tabs": config.stretch_tabs
             },
             "mods": {
                 "total": total_mods,
@@ -528,6 +547,7 @@ fn run_status(as_json: bool) {
         }
 
         println!("Config: Selector '{}', Delay {}ms, Detach Timeout {}ms", config.ui_ready_selector, config.init_delay_ms, config.detach_timeout_ms);
+        println!("Stretch-Tabs: {}", if stretch_tabs_patched { "Active [✓]" } else { "Inactive [ ]" });
         println!("Mods Summary: {} total ({} CSS active, {} JS active)", total_mods, enabled_css, enabled_js);
     }
 }
@@ -618,6 +638,67 @@ fn run_toggle(mod_name: &str) {
             }
         }
         Err(e) => eprintln!("Error toggling mod: {}", e),
+    }
+}
+
+fn run_stretch_tabs() {
+    let mut config = match ModConfig::load_or_require_setup() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if config.vivaldi_path.is_none() {
+        eprintln!("Error: Vivaldi path is not configured.");
+        eprintln!("Run 'interceptor setup' to select your Vivaldi installation.");
+        std::process::exit(1);
+    }
+
+    config.stretch_tabs = !config.stretch_tabs;
+    let new_state = config.stretch_tabs;
+
+    if let Err(e) = config.save() {
+        eprintln!("Error saving config: {}", e);
+        std::process::exit(1);
+    }
+
+    match discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new)) {
+        Ok(target) => {
+            let vivaldi_bundle_js = target.resources_dir.join("bundle.js");
+            if new_state {
+                match bundle_patcher::patch_bundle_js(&vivaldi_bundle_js) {
+                    Ok(true) => {
+                        println!("✓ Stretch-tabs mod ENABLED — tabs will now stretch to fill the tab bar width.");
+                        println!("  Patched: {}", vivaldi_bundle_js.display());
+                    }
+                    Ok(false) => {
+                        println!("✓ Stretch-tabs mod ENABLED (bundle.js was already patched).");
+                    }
+                    Err(e) => {
+                        eprintln!("⚠ Stretch-tabs enabled in config but patch failed: {}", e);
+                        eprintln!("  The mod will be applied on next successful patch.");
+                    }
+                }
+            } else {
+                match bundle_patcher::unpatch_bundle_js(&vivaldi_bundle_js) {
+                    Ok(true) => {
+                        println!("✓ Stretch-tabs mod DISABLED — restored original bundle.js.");
+                    }
+                    Ok(false) => {
+                        println!("✓ Stretch-tabs mod DISABLED (bundle.js was not patched).");
+                    }
+                    Err(e) => {
+                        eprintln!("⚠ Stretch-tabs disabled in config but unpatch failed: {}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error discovering Vivaldi: {}", e);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -758,6 +839,14 @@ fn run_unpatch_command(clean: bool) {
                     println!("  (Run 'interceptor unpatch --clean' to also remove the backup)");
                 }
             }
+
+            // 5. Restore Vivaldi bundle.js if stretch-tabs was applied
+            let vivaldi_bundle_js = target.resources_dir.join("bundle.js");
+            match bundle_patcher::unpatch_bundle_js(&vivaldi_bundle_js) {
+                Ok(true) => println!("\u{2713} Restored original bundle.js at {}", vivaldi_bundle_js.display()),
+                Ok(false) => {}
+                Err(e) => eprintln!("Notice: {}", e),
+            }
         }
         Err(e) => eprintln!("Error discovering Vivaldi: {}", e),
     }
@@ -892,6 +981,7 @@ SUBCOMMANDS:
                             --json               Output as JSON
                             --rescan             Scan user_mods/ for new files and register them
     toggle <MOD_NAME>     Toggle a mod between enabled and disabled
+    stretch-tabs          Toggle the tab stretch mod (patches Vivaldi bundle.js to remove max tab width limit)
     import <FILE_PATH>    Import a new .css or .js mod file into the manager
     patch                 Manually compile bundles and patch window.html
     unpatch [OPTS]        Restore pristine window.html without mod hooks

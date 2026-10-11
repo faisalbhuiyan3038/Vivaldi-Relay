@@ -59,6 +59,10 @@ fn default_exe_name() -> String {
     "vivaldi.exe".to_string()
 }
 
+fn default_stretch_tabs() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModConfig {
     pub version: u32,
@@ -73,6 +77,8 @@ pub struct ModConfig {
     pub detach_timeout_ms: u32,
     #[serde(default = "default_exe_name")]
     pub exe_name: String,
+    #[serde(default = "default_stretch_tabs")]
+    pub stretch_tabs: bool,
     pub mods: Vec<ModItem>,
 }
 
@@ -86,6 +92,7 @@ impl Default for ModConfig {
             init_delay_ms: default_init_delay_ms(),
             detach_timeout_ms: default_detach_timeout_ms(),
             exe_name: default_exe_name(),
+            stretch_tabs: default_stretch_tabs(),
             mods: Vec::new(),
         }
     }

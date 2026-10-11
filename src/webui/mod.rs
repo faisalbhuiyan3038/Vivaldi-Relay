@@ -3,6 +3,7 @@
 // Launched via `interceptor webui [--port PORT] [--open]`.
 
 use crate::bundler;
+use crate::bundle_patcher;
 use crate::config::ModConfig;
 use crate::discovery;
 use crate::os_hook;
@@ -183,6 +184,10 @@ fn route(
             let (s, b) = api_uninstall_hook();
             (s, b, false, false)
         }
+        (Method::Post, "/api/stretch-tabs") => {
+            let (s, b) = api_stretch_tabs();
+            (s, b, false, false)
+        }
         (Method::Post, "/api/shutdown") => {
             (200, r#"{"message":"Shutting down"}"#.to_string(), false, true)
         }
@@ -245,7 +250,8 @@ fn api_status() -> (u16, String) {
             "init_delay_ms": config.init_delay_ms,
             "detach_timeout_ms": config.detach_timeout_ms,
             "exe_name": config.exe_name,
-            "auto_patch": config.auto_patch
+            "auto_patch": config.auto_patch,
+            "stretch_tabs": config.stretch_tabs
         },
         "mods": {
             "total": total_mods,
@@ -458,6 +464,7 @@ fn api_save_config(body: &str) -> (u16, String) {
     if let Some(n) = v["detach_timeout_ms"].as_u64() { config.detach_timeout_ms = n as u32; }
     if let Some(s) = v["exe_name"].as_str()          { config.exe_name = s.to_string(); }
     if let Some(b) = v["auto_patch"].as_bool()       { config.auto_patch = b; }
+    if let Some(b) = v["stretch_tabs"].as_bool()     { config.stretch_tabs = b; }
 
     match config.save() {
         Ok(_) => {
@@ -549,6 +556,67 @@ fn api_install_hook() -> (u16, String) {
             (200, serde_json::to_string(&json).unwrap_or_default())
         }
         Err(e) => err_json(500, &format!("Hook installation failed: {}", e)),
+    }
+}
+
+fn api_stretch_tabs() -> (u16, String) {
+    let mut config = match ModConfig::load_or_require_setup() {
+        Ok(c) => c,
+        Err(e) => return err_json(400, &e),
+    };
+    if config.vivaldi_path.is_none() {
+        return err_json(400, "Vivaldi path not configured.");
+    }
+
+    config.stretch_tabs = !config.stretch_tabs;
+    let new_state = config.stretch_tabs;
+
+    if let Err(e) = config.save() {
+        return err_json(500, &e);
+    }
+
+    match discovery::resolve_vivaldi(config.vivaldi_path.as_deref().map(Path::new)) {
+        Ok(target) => {
+            let vivaldi_bundle_js = target.resources_dir.join("bundle.js");
+            if new_state {
+                match bundle_patcher::patch_bundle_js(&vivaldi_bundle_js) {
+                    Ok(true) => {
+                        let json = serde_json::json!({
+                            "stretch_tabs": true,
+                            "message": "Stretch-tabs mod enabled. Tabs will now fill the full tab bar width."
+                        });
+                        (200, serde_json::to_string(&json).unwrap_or_default())
+                    }
+                    Ok(false) => {
+                        let json = serde_json::json!({
+                            "stretch_tabs": true,
+                            "message": "Stretch-tabs mod enabled (bundle.js was already patched)."
+                        });
+                        (200, serde_json::to_string(&json).unwrap_or_default())
+                    }
+                    Err(e) => err_json(500, &format!("Patch failed: {}", e)),
+                }
+            } else {
+                match bundle_patcher::unpatch_bundle_js(&vivaldi_bundle_js) {
+                    Ok(true) => {
+                        let json = serde_json::json!({
+                            "stretch_tabs": false,
+                            "message": "Stretch-tabs mod disabled. Original bundle.js restored."
+                        });
+                        (200, serde_json::to_string(&json).unwrap_or_default())
+                    }
+                    Ok(false) => {
+                        let json = serde_json::json!({
+                            "stretch_tabs": false,
+                            "message": "Stretch-tabs mod disabled (bundle.js was not patched)."
+                        });
+                        (200, serde_json::to_string(&json).unwrap_or_default())
+                    }
+                    Err(e) => err_json(500, &format!("Unpatch failed: {}", e)),
+                }
+            }
+        }
+        Err(e) => err_json(400, &format!("Vivaldi discovery failed: {}", e)),
     }
 }
 

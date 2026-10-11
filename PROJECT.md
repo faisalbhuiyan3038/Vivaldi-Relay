@@ -179,6 +179,7 @@ If `portable.lock`, `mods_config.json`, or a `user_mods/` folder exists directly
 | **`launcher.rs`** | `src/launcher.rs` | Hardlink synchronization (`ensure_real_executable`), Win32 `CreateProcessW`, command-line quoting, and failsafe `MessageBoxW`. |
 | **`patcher.rs`** | `src/patcher.rs` | Pure idempotent modification of `window.html` (leaves other user scripts intact), preservation of `.orig` backups, and atomic `.tmp` file renaming. |
 | **`bundler.rs`** | `src/bundler.rs` | Aggregates enabled CSS/JS, sorts by priority order, generates configurable DOM readiness poller, creates error-trapping IIFEs. |
+| **`bundle_patcher.rs`** | `src/bundle_patcher.rs` | Patches Vivaldi's internal `bundle.js` to remove the maximum tab width limit (180px → 5200px), allowing tabs to stretch and fill the full tab bar width. Implements manual pattern matching equivalent to the regex `(?<![-+!<>=*/%&^|?])=180(?=[;,].{0,1000}isDraggingPinnedTab)`. |
 | **`discovery.rs`** | `src/discovery.rs` | Dynamic drive enumeration (`GetLogicalDrives`), registry lookups, snapshot detection, semantic version parser, UNC prefix cleaner. |
 | **`config.rs`** | `src/config.rs` | Schema serialization (`ModConfig`, `ModItem`), portable mode detection (`is_portable`), JSON persistence, mod toggling. |
 | **`os_hook.rs`** | `src/os_hook.rs` | Reads/writes IFEO `Debugger` key in `HKLM` for custom target exe names, automatic UAC elevation via `ShellExecuteExW("runas")`. |
@@ -230,6 +231,7 @@ SUBCOMMANDS:
     status [--json]       Display hook status, storage mode, Vivaldi installation info, and mod stats
     list-mods [--json]    List all registered mods, load order, and their enabled/disabled states
     toggle <MOD_NAME>     Toggle a mod between enabled and disabled
+    stretch-tabs          Toggle the tab stretch mod (patches Vivaldi bundle.js to remove max tab width limit)
     import <FILE_PATH>    Import a new .css or .js mod file into the manager
     patch                 Manually compile bundles and patch window.html
     unpatch               Restore pristine window.html and clean up temporary hardlinks/bundles
@@ -259,10 +261,30 @@ Whenever modifications are made to this codebase, developers/agents must adhere 
 4. **Pristine Backups**: Never overwrite `window.html.orig` if it already exists; it holds the unmodded baseline from the Vivaldi installer.
 5. **Maintain Test Coverage**: Run `cargo test` before submitting changes. Ensure unit tests in `tests/patcher_tests.rs` remain isolated using `VIVALDI_MOD_MANAGER_DIR`.
 6. **Update Changelog Below**: Log every notable change in Section 8.
+7. **CLI ↔ WebUI Feature Parity (HARD CONSTRAINT)**: Every user-facing feature MUST be available in BOTH the CLI (`src/main.rs`) and the WebUI (`src/webui/mod.rs` + `src/webui/ui.html`). It is strictly forbidden for one interface to have capabilities the other lacks. When adding a new feature:
+   - If it can be triggered by a CLI command, a corresponding WebUI API endpoint AND UI control MUST be added in the same patch.
+   - If it can be toggled/configured via WebUI, an equivalent CLI command MUST exist.
+   - Both interfaces MUST share the same underlying lib functions — no logic duplication.
+   - Both MUST produce the same observable state changes (config fields, file patches, etc.).
+   - Tests MUST cover both paths where applicable.
 
 ---
 
 ## 8. Change Log
+
+### [v0.1.7] - 2026-10-11
+
+**Feature: Tab Stretch Mod (bundle.js Patcher)**
+
+- **Feature**: Added `interceptor stretch-tabs` command that toggles a mod allowing Vivaldi tabs to stretch and fill the full tab bar width.
+- **Feature**: New `src/bundle_patcher.rs` module — patches Vivaldi's internal `bundle.js` by replacing the max tab width value (`=180` → `=5200`). Uses manual string matching equivalent to the regex `(?<![-+!<>=*/%&^|?])=180(?=[;,].{0,1000}isDraggingPinnedTab)` since Rust's `regex` crate does not support lookbehind.
+- **Feature**: New `stretch_tabs: bool` configuration field in `ModsConfig` (default: `false`).
+- **Feature**: Integrated into the JIT launch lifecycle — when `stretch_tabs` is enabled, `bundle.js` is patched automatically on launch.
+- **Feature**: `interceptor unpatch` now also restores the original `bundle.js` from backup.
+- **Feature**: `interceptor status` now displays stretch-tabs state.
+- **Backup**: Creates `bundle.js.orig` before first patch; never overwrites existing backups.
+- **Idempotent**: Safe to run multiple times; detects if already patched.
+- **Graceful degradation**: If the pattern is not found (e.g., Vivaldi changes internal code), a warning is shown but the browser still launches.
 
 ### [v0.1.6] - 2026-09-22
 
