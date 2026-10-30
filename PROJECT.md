@@ -260,7 +260,7 @@ Whenever modifications are made to this codebase, developers/agents must adhere 
 3. **Preserve Idempotency**: All patching logic must check for existence of hooks before editing `window.html`. Never inject twice.
 4. **Pristine Backups**: Never overwrite `window.html.orig` if it already exists; it holds the unmodded baseline from the Vivaldi installer.
 5. **Maintain Test Coverage**: Run `cargo test` before submitting changes. Ensure unit tests in `tests/patcher_tests.rs` remain isolated using `VIVALDI_MOD_MANAGER_DIR`.
-6. **Update Changelog Below**: Log every notable change in Section 8.
+6. **Update Changelog Below**: Log every notable change in Section 9.
 7. **CLI ↔ WebUI Feature Parity (HARD CONSTRAINT)**: Every user-facing feature MUST be available in BOTH the CLI (`src/main.rs`) and the WebUI (`src/webui/mod.rs` + `src/webui/ui.html`). It is strictly forbidden for one interface to have capabilities the other lacks. When adding a new feature:
    - If it can be triggered by a CLI command, a corresponding WebUI API endpoint AND UI control MUST be added in the same patch.
    - If it can be toggled/configured via WebUI, an equivalent CLI command MUST exist.
@@ -270,7 +270,24 @@ Whenever modifications are made to this codebase, developers/agents must adhere 
 
 ---
 
-## 8. Change Log
+## 8. Python One-Shot Patcher (`python/`)
+
+`python/vivaldi_patcher.py` is a hook-free alternative to the IFEO interceptor. It is a single stdlib-only script that patches the chosen version folder once, when the user runs it, and reverts it with `unpatch`. See `python/README.md` for usage.
+
+- **Config**: `VIVALDI_EXE`, `MODS_DIR` (default: script dir, containing `css/` and `js/`) and `STRETCH_TABS` constants at the top of the script, each overridable via CLI flags.
+- **Version selection**: scans `Application\` for `X.Y.Z.W` folders. If there are several (an update is pending), it prompts, or the user passes `--version`.
+- **Load order**: `css/order.txt` and `js/order.txt` list mods top-first, and a `#` prefix disables one. The script syncs them with the folder on every run and offers an interactive `order` editor.
+- **Artifacts**: `vivaldi-mods.css`/`vivaldi-mods.js` plus a marker-delimited hook in `window.html` (`<!-- vivaldi-patcher:begin/end -->`). Backups use the `.vmp-orig` suffix. These don't collide with the Rust tool's `inject_bundle.*` and `.orig`.
+- **Stretch tabs**: Python port of `bundle_patcher.rs` using the same lookbehind regex.
+- **Legacy detection**: warns, read-only, if the IFEO `Debugger` key, `vivaldi_real.exe` or an `inject_bundle.js` hook is still present.
+
+---
+
+## 9. Change Log
+
+### [py-0.1.0] - 2026-10-30
+
+- **Feature**: Added `python/vivaldi_patcher.py`, a one-shot patcher with no hook (`patch`/`unpatch`/`order`/`status` + interactive menu), multi-version prompt, `order.txt`-based load order, and an optional stretch-tabs patch.
 
 ### [v0.1.7] - 2026-10-11
 
